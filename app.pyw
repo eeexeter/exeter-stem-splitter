@@ -41,7 +41,6 @@ MUTED = "#b3b3b3"
 BORDER = "#454545"
 BUTTON = "#292929"
 DROP_ICON_SCALES = (0.62, 0.75, 0.85, 0.92, 0.96, 0.985, 1.0)
-TRANSPORT_REVEAL_STEPS = 8
 
 
 def clock_time(seconds):
@@ -134,7 +133,6 @@ class App:
         self.stem_selection = {}
         self.card_press = None
         self.seeking = False
-        self.transport_animation = None
         self.playhead = tk.DoubleVar()
         self.playback_time = tk.StringVar(value="0:00 / 0:00")
         self.process = None
@@ -250,13 +248,10 @@ class App:
             bars.rounded_rectangle((x, 14, x + 16, 82), radius=6, fill=TEXT)
         self.pause_photo = ImageTk.PhotoImage(pause.resize(size, Image.Resampling.LANCZOS), master=root)
         self.transport = tk.Frame(self.stem_list, bg=FIELD)
-        self.transport_clip = tk.Frame(self.transport, bg=FIELD)
-        transport_content = self.transport_content = tk.Frame(self.transport_clip, bg=FIELD)
-        transport_content.place(relwidth=1)
-        self.playback_clock = self.label(transport_content, variable=self.playback_time, bg=FIELD,
+        self.playback_clock = self.label(self.transport, variable=self.playback_time, bg=FIELD,
                                          color=MUTED, anchor="e")
         self.playback_clock.pack(side="right", padx=(px(8), 0))
-        self.timeline = Timeline(transport_content, self.playhead, px)
+        self.timeline = Timeline(self.transport, self.playhead, px)
         self.timeline.pack(side="left", fill="x", expand=True)
         self.timeline.bind("<ButtonPress-1>", self.begin_seek)
         self.timeline.bind("<B1-Motion>", self.preview_seek)
@@ -636,7 +631,6 @@ class App:
     def reset_timeline(self):
         self.seeking = False
         self.card_press = None
-        self.cancel_transport_animation()
         self.timeline.set_duration(0)
         self.update_playhead(0)
         if self.transport.winfo_manager():
@@ -644,29 +638,10 @@ class App:
             self.fit_playback()
 
     def show_transport(self, card):
-        self.cancel_transport_animation()
         self.transport.pack_forget()
-        height = self.transport_content.winfo_reqheight()
-        self.transport.configure(height=height)
-        self.transport_clip.place(relwidth=1, height=1)
         self.transport.pack(in_=card, fill="x", pady=(self.pixels(3), 0))
         self.transport.tkraise()
         self.fit_playback()
-        self.transport_animation = self.root.after(16, self.animate_transport, height, 1)
-
-    def animate_transport(self, height, step):
-        self.transport_animation = None
-        progress = step / TRANSPORT_REVEAL_STEPS
-        eased = 1 - (1 - progress) ** 3
-        next_height = 1 + round((height - 1) * eased)
-        self.transport_clip.place_configure(height=next_height)
-        if step < TRANSPORT_REVEAL_STEPS:
-            self.transport_animation = self.root.after(16, self.animate_transport, height, step + 1)
-
-    def cancel_transport_animation(self):
-        if self.transport_animation is not None:
-            self.root.after_cancel(self.transport_animation)
-            self.transport_animation = None
 
     def update_playhead(self, position):
         self.playhead.set(position)
