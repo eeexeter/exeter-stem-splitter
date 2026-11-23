@@ -1,4 +1,4 @@
-# Stem Splitter — Demucs
+# Stem Splitter - Demucs
 
 Stem Splitter uses Demucs v4 to separate tracks on Windows x64. Both portable builds include Python and all three model modes for offline use.
 
