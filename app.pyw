@@ -128,6 +128,7 @@ class App:
         self.state = tk.StringVar(value="Select an audio file")
         self.result = None
         self.player = StemPlayer()
+        self.displayed_playback_state = self.player.state
         self.play_buttons = {}
         self.stem_cards = {}
         self.stem_selection = {}
@@ -249,7 +250,8 @@ class App:
             bars.rounded_rectangle((x, 14, x + 16, 82), radius=6, fill=TEXT)
         self.pause_photo = ImageTk.PhotoImage(pause.resize(size, Image.Resampling.LANCZOS), master=root)
         self.transport = tk.Frame(self.stem_list, bg=FIELD)
-        transport_content = self.transport_content = tk.Frame(self.transport, bg=FIELD)
+        self.transport_clip = tk.Frame(self.transport, bg=FIELD)
+        transport_content = self.transport_content = tk.Frame(self.transport_clip, bg=FIELD)
         transport_content.place(relwidth=1)
         self.playback_clock = self.label(transport_content, variable=self.playback_time, bg=FIELD,
                                          color=MUTED, anchor="e")
@@ -458,9 +460,8 @@ class App:
                     self.set_progress(event["progress"])
         if self.player.source is not None:
             try:
-                previous_state = self.player.state
                 self.player.poll()
-                if self.player.state != previous_state:
+                if self.player.state != self.displayed_playback_state:
                     self.update_playback_buttons()
                 if not self.seeking:
                     self.update_playhead(self.player.position())
@@ -645,20 +646,20 @@ class App:
     def show_transport(self, card):
         self.cancel_transport_animation()
         self.transport.pack_forget()
-        self.transport.configure(height=1)
+        height = self.transport_content.winfo_reqheight()
+        self.transport.configure(height=height)
+        self.transport_clip.place(relwidth=1, height=1)
         self.transport.pack(in_=card, fill="x", pady=(self.pixels(3), 0))
         self.transport.tkraise()
         self.fit_playback()
-        self.animate_transport(self.transport_content.winfo_reqheight(), 1)
+        self.transport_animation = self.root.after(16, self.animate_transport, height, 1)
 
     def animate_transport(self, height, step):
         self.transport_animation = None
         progress = step / TRANSPORT_REVEAL_STEPS
         eased = 1 - (1 - progress) ** 3
         next_height = 1 + round((height - 1) * eased)
-        if next_height != int(self.transport.cget("height")):
-            self.transport.configure(height=next_height)
-            self.fit_playback()
+        self.transport_clip.place_configure(height=next_height)
         if step < TRANSPORT_REVEAL_STEPS:
             self.transport_animation = self.root.after(16, self.animate_transport, height, step + 1)
 
@@ -701,9 +702,10 @@ class App:
 
     def update_playback_buttons(self):
         active = self.player.source
-        active_text = {"paused": "Resume", "playing": "Pause"}.get(self.player.state, "Play")
+        self.displayed_playback_state = state = self.player.state
+        active_text = {"paused": "Resume", "playing": "Pause"}.get(state, "Play")
         for path, button in self.play_buttons.items():
-            playing = path == active and self.player.state == "playing"
+            playing = path == active and state == "playing"
             button.configure(text=active_text if path == active else "Play",
                              image=self.pause_photo if playing else self.play_photo)
         self.stop_button.configure(state="normal" if active else "disabled")
