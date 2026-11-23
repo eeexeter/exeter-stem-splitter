@@ -16,6 +16,8 @@ Stem Splitter accepts WAV, MP3, FLAC, M4A, AAC, OGG, and other formats that FFmp
 
 Piano separation quality varies by recording. [Demucs documentation](https://github.com/facebookresearch/demucs#separating-tracks)
 
+**Recent results** lets you open a result folder or load its stems into the player after restarting. Use **Open existing stem folder…** for a folder exported before the history was added.
+
 ## Building from source
 
 Install Python 3.14 x64 for Windows with Tcl/Tk. Run `.\build.ps1` from the project directory to build both variants. Run `.\build.ps1 -Variant CPU` for the CPU-only build or `.\build.ps1 -Variant CUDA` for the CUDA build. The CPU-only build skips the CUDA 12.6 dependency download. The versioned portable folders and ZIP archives are created in `dist`. The CPU-only filenames include `CPU-only`.

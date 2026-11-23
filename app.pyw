@@ -13,6 +13,7 @@ from PIL import Image, ImageTk
 from tkinterdnd2 import COPY, DND_FILES, REFUSE_DROP, TkinterDnD
 
 from models import DEFAULT_MODEL, MODEL_STEMS, QUALITY_MODEL, SIX_STEM_MODEL
+from recent_results import RecentResult, find_existing_result, recent_results, remember_result
 from stem_icons import stem_icon
 from stem_player import StemPlayer
 from version import VERSION
@@ -161,6 +162,9 @@ class App:
         style.configure("TButton", padding=(px(14), px(8)), background=BUTTON, foreground=TEXT,
                         bordercolor=BORDER, lightcolor=BUTTON, darkcolor=BUTTON)
         style.map("TButton", background=[("active", "#404040")], foreground=[("disabled", "#888888")])
+        style.configure("TMenubutton", padding=(px(10), px(6)), background=BUTTON, foreground=TEXT,
+                        bordercolor=BORDER, arrowcolor=TEXT)
+        style.map("TMenubutton", background=[("active", "#404040")], foreground=[("disabled", "#888888")])
         style.configure("Primary.TButton", background=TEXT, foreground=BG,
                         bordercolor=TEXT, lightcolor=TEXT, darkcolor=TEXT,
                         font=("Segoe UI", 10, "bold"))
@@ -188,7 +192,13 @@ class App:
         self.progress.pack(fill="x", pady=(0, px(5)))
         self.label(footer, variable=self.state, color=MUTED).pack(anchor="w")
 
-        self.label(body, "Stem Splitter", size=27, bold=True).pack(anchor="w")
+        heading = tk.Frame(body, bg=BG)
+        heading.pack(fill="x")
+        self.label(heading, "Stem Splitter", size=27, bold=True).pack(side="left")
+        self.recent_button = ttk.Menubutton(heading, text="Recent results")
+        self.recent_button.pack(side="right")
+        self.recent_menu = self.result_menu(self.recent_button, postcommand=self.show_recent_menu)
+        self.recent_button.configure(menu=self.recent_menu)
         self.label(body, "Demucs v4  ·  Local processing", color=MUTED).pack(anchor="w", pady=(px(2), px(16)))
 
         card = tk.Frame(body, bg=PANEL, padx=px(18), pady=px(14), highlightbackground=BORDER, highlightthickness=1)
@@ -370,6 +380,7 @@ class App:
         self.start_button.configure(state="disabled" if busy or not self.source.get() else "normal")
         self.cancel_button.configure(state="normal" if busy and not self.cancelled else "disabled")
         self.result_button.configure(state="normal" if self.result and not busy else "disabled")
+        self.recent_button.configure(state="disabled" if busy else "normal")
         self.model_menu.configure(state="disabled" if busy else "readonly")
 
     def set_progress(self, value=None):
@@ -480,7 +491,10 @@ class App:
             self.output.set(str(self.result))
             device = f" · {self.processing_device}" if self.processing_device else ""
             self.state.set(f"Done · Saved {len(self.expected_outputs)} stems{device}")
-            self.show_stems()
+            entry = RecentResult(self.result.resolve(),
+                                 {stem: self.stem_filename(stem) for stem in self.expected_outputs})
+            self.save_recent(entry)
+            self.show_stems(entry.available_files())
         elif self.cancelled:
             self.state.set("Cancelled")
         else:
@@ -510,9 +524,9 @@ class App:
     def end_stem_drag(self, _event):
         self.dragging_stem = False
 
-    def show_stems(self):
+    def show_stems(self, files):
         px = self.pixels
-        for index, stem in enumerate(self.expected_outputs):
+        for index, (stem, path) in enumerate(files.items()):
             row = tk.Frame(self.stem_list, bg=FIELD, padx=px(8), pady=px(3))
             row.grid(row=index // 2, column=index % 2, sticky="ew", padx=px(3), pady=(px(4), 0))
             controls = tk.Frame(row, bg=FIELD)
@@ -521,7 +535,6 @@ class App:
             icon.pack(side="left", padx=(0, px(7)))
             name = self.label(controls, stem.capitalize(), bg=FIELD)
             name.pack(side="left")
-            path = self.result / self.stem_filename(stem)
             button = ttk.Button(controls, text="Play", width=7, style="Playback.TButton",
                                 command=lambda source=path: self.play_stem(source))
             button.pack(side="right")
@@ -640,9 +653,62 @@ class App:
         else:
             self.root.destroy()
 
-    def open_result(self):
+    def result_menu(self, parent, **options):
+        return tk.Menu(parent, tearoff=False, bg=PANEL, fg=TEXT, activebackground=TEXT,
+                       activeforeground=BG, **options)
+
+    def show_recent_menu(self):
+        self.recent_menu.delete(0, "end")
+        for child in self.recent_menu.winfo_children():
+            child.destroy()
+        for entry in recent_results():
+            actions = self.result_menu(self.recent_menu)
+            actions.add_command(label="Listen", command=lambda result=entry: self.listen_to_result(result))
+            actions.add_command(label="Open folder", command=lambda result=entry: self.open_result(result.folder))
+            name = entry.folder.name
+            self.recent_menu.add_cascade(label=name if len(name) <= 55 else name[:52] + "…", menu=actions)
+        if self.recent_menu.index("end") is None:
+            self.recent_menu.add_command(label="No recent results", state="disabled")
+        self.recent_menu.add_separator()
+        self.recent_menu.add_command(label="Open existing stem folder…", command=self.open_existing_result)
+
+    def open_existing_result(self):
+        selected = filedialog.askdirectory(parent=self.root, initialdir=documents_folder(),
+                                           title="Open an existing stem folder", mustexist=True)
+        if selected:
+            try:
+                self.listen_to_result(find_existing_result(Path(selected)), save=True)
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("Couldn't open the result", str(exc), parent=self.root)
+
+    def listen_to_result(self, entry, *, save=False):
+        files = entry.available_files()
+        if not files:
+            messagebox.showerror("Couldn't open the result", "The exported WAV files are missing.", parent=self.root)
+            return
+        self.clear_result()
+        self.result = entry.folder
+        if not self.source.get():
+            self.output.set(str(entry.folder))
+        self.set_progress(0)
+        self.state.set(f"Loaded · {entry.folder.name}")
+        if save:
+            self.save_recent(entry)
+        self.show_stems(files)
+        self.update_buttons()
+
+    def save_recent(self, entry):
         try:
-            os.startfile(self.result)
+            remember_result(entry)
+        except OSError:
+            self.state.set(self.state.get() + " · Recent history unavailable")
+
+    def open_result(self, folder=None):
+        try:
+            folder = folder or self.result
+            if not folder or not folder.is_dir():
+                raise FileNotFoundError("The output folder is missing.")
+            os.startfile(folder)
         except OSError as exc:
             messagebox.showerror("Couldn't open the output folder", str(exc), parent=self.root)
 
