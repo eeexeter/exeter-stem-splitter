@@ -130,6 +130,7 @@ class App:
         self.player = StemPlayer()
         self.play_buttons = {}
         self.playback_slots = {}
+        self.stem_selection = {}
         self.seeking = False
         self.playhead = tk.DoubleVar()
         self.playback_time = tk.StringVar(value="0:00 / 0:00")
@@ -171,6 +172,11 @@ class App:
         style.map("Primary.TButton", background=[("disabled", BUTTON), ("active", "#dcdcdc")],
                   bordercolor=[("disabled", BORDER)])
         style.configure("Playback.TButton", padding=(px(7), px(3)))
+        style.configure("Stem.TCheckbutton", background=FIELD, indicatorbackground=FIELD,
+                        indicatorforeground=BG, indicatorsize=px(13), indicatormargin=0,
+                        upperbordercolor=BORDER, lowerbordercolor=BORDER, padding=0)
+        style.map("Stem.TCheckbutton", background=[("active", FIELD)],
+                  indicatorbackground=[("selected", TEXT), ("active", BUTTON)])
         for control in ("TEntry", "TCombobox"):
             style.configure(control, foreground=TEXT, fieldbackground=FIELD, padding=(px(9), px(8)),
                             bordercolor=BORDER, lightcolor=FIELD, darkcolor=FIELD,
@@ -227,7 +233,10 @@ class App:
         self.stop_button = ttk.Button(header, text="Stop", style="Playback.TButton",
                                       command=self.stop_playback)
         self.stop_button.pack(side="right")
-        self.label(header, "Drag a stem to export", bg=PANEL, color=MUTED).pack(
+        self.select_stems_button = ttk.Button(header, text="Select all", width=14, style="Playback.TButton",
+                                             command=self.toggle_stem_selection)
+        self.select_stems_button.pack(side="right", padx=(0, px(8)))
+        self.label(header, "Select stems, then drag", bg=PANEL, color=MUTED).pack(
             side="right", padx=(0, px(10)))
         self.stem_list = tk.Frame(self.playback, bg=PANEL)
         self.stem_list.pack(fill="x")
@@ -516,13 +525,27 @@ class App:
         return f"{self.track_name} - {label}.wav"
 
     def start_stem_drag(self, path):
-        if not path.is_file():
+        paths = (path,)
+        if self.stem_selection[path].get():
+            paths = tuple(selected for selected, checked in self.stem_selection.items() if checked.get())
+        if any(not source.is_file() for source in paths):
+            self.state.set("A WAV selected for export is missing.")
             return REFUSE_DROP
         self.dragging_stem = True
-        return COPY, DND_FILES, (str(path),)
+        return COPY, DND_FILES, tuple(map(str, paths))
 
     def end_stem_drag(self, _event):
         self.dragging_stem = False
+
+    def toggle_stem_selection(self):
+        selected = not all(checked.get() for checked in self.stem_selection.values())
+        for checked in self.stem_selection.values():
+            checked.set(selected)
+        self.update_stem_selection()
+
+    def update_stem_selection(self):
+        all_selected = self.stem_selection and all(checked.get() for checked in self.stem_selection.values())
+        self.select_stems_button.configure(text="Clear selection" if all_selected else "Select all")
 
     def show_stems(self, files):
         px = self.pixels
@@ -531,6 +554,11 @@ class App:
             row.grid(row=index // 2, column=index % 2, sticky="ew", padx=px(3), pady=(px(4), 0))
             controls = tk.Frame(row, bg=FIELD)
             controls.pack(fill="x")
+            checked = tk.BooleanVar(value=False)
+            self.stem_selection[path] = checked
+            checkbox = ttk.Checkbutton(controls, variable=checked, style="Stem.TCheckbutton",
+                                       command=self.update_stem_selection)
+            checkbox.pack(side="left", padx=(0, px(8)))
             icon = stem_icon(controls, ASSETS / "stem-icons" / f"{stem}.png", px(24), FIELD)
             icon.pack(side="left", padx=(0, px(7)))
             name = self.label(controls, stem.capitalize(), bg=FIELD)
@@ -549,6 +577,7 @@ class App:
                 handle.dnd_bind("<<DragInitCmd>>", lambda _event, source=path: self.start_stem_drag(source))
                 handle.dnd_bind("<<DragEndCmd>>", self.end_stem_drag)
         self.update_playback_buttons()
+        self.update_stem_selection()
         self.playback.pack(fill="x", pady=(px(12), 0))
         self.fit_playback()
 
@@ -561,6 +590,7 @@ class App:
                 slot.master.destroy()
             self.play_buttons.clear()
             self.playback_slots.clear()
+            self.stem_selection.clear()
             self.fit_playback()
 
     def fit_playback(self):
