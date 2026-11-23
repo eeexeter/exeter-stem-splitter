@@ -123,6 +123,11 @@ def configure_theme(root, px):
                         selectbackground=BUTTON, selectforeground=TEXT)
         style.map(name, fieldbackground=[("readonly", FIELD), ("disabled", FIELD)],
                   bordercolor=[("focus", MUTED)])
+    style.layout("Path.TEntry", [("Entry.padding", {"sticky": "nsew", "children": [
+        ("Entry.textarea", {"sticky": "nsew"})
+    ]})])
+    style.configure("Path.TEntry", background=FIELD)
+    style.map("Path.TEntry", background=[("readonly", FIELD), ("disabled", FIELD)])
     style.configure("TCombobox", arrowsize=px(15), arrowcolor=MUTED)
     style.map("TCombobox", background=[("active", "#414141"), ("readonly", BUTTON)],
               arrowcolor=[("disabled", MUTED)])
