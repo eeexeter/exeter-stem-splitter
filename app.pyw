@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
 from tkinterdnd2 import COPY, DND_FILES, REFUSE_DROP, TkinterDnD
 
+from appearance import BG, BORDER, FIELD, MUTED, PANEL, TEXT, RoundedPanel, configure_theme
 from models import DEFAULT_MODEL, MODEL_STEMS, QUALITY_MODEL, SIX_STEM_MODEL
 from stem_icons import stem_icon
 from stem_player import StemPlayer
@@ -33,13 +34,6 @@ MODEL_CHOICES = {
     "6 stems · + Guitar & Piano": SIX_STEM_MODEL,
 }
 
-BG = "#101010"
-PANEL = "#1b1b1b"
-FIELD = "#121212"
-TEXT = "#f6f6f6"
-MUTED = "#b3b3b3"
-BORDER = "#454545"
-BUTTON = "#292929"
 DROP_ICON_SCALES = (0.62, 0.75, 0.85, 0.92, 0.96, 0.985, 1.0)
 
 
@@ -159,35 +153,9 @@ class App:
         root.option_add("*TCombobox*Listbox.selectBackground", TEXT)
         root.option_add("*TCombobox*Listbox.selectForeground", BG)
 
-        style = ttk.Style(root)
-        style.theme_use("clam")
-        style.configure("TButton", padding=(px(14), px(8)), background=BUTTON, foreground=TEXT,
-                        bordercolor=BORDER, lightcolor=BUTTON, darkcolor=BUTTON)
-        style.map("TButton", background=[("active", "#404040")], foreground=[("disabled", "#888888")])
-        style.configure("Primary.TButton", background=TEXT, foreground=BG,
-                        bordercolor=TEXT, lightcolor=TEXT, darkcolor=TEXT,
-                        font=("Segoe UI", 10, "bold"))
-        style.map("Primary.TButton", background=[("disabled", BUTTON), ("active", "#dcdcdc")],
-                  bordercolor=[("disabled", BORDER)])
-        style.configure("Playback.TButton", padding=(px(7), px(3)))
-        style.configure("Stem.TCheckbutton", background=FIELD, indicatorbackground=FIELD,
-                        indicatorforeground=BG, indicatorsize=px(13), indicatormargin=0,
-                        upperbordercolor=BORDER, lowerbordercolor=BORDER, padding=0)
-        style.map("Stem.TCheckbutton", background=[("active", FIELD)],
-                  indicatorbackground=[("selected", TEXT), ("active", BUTTON)])
-        for control in ("TEntry", "TCombobox"):
-            style.configure(control, foreground=TEXT, fieldbackground=FIELD, padding=(px(9), px(8)),
-                            bordercolor=BORDER, lightcolor=FIELD, darkcolor=FIELD,
-                            selectbackground=TEXT, selectforeground=BG)
-            style.map(control, fieldbackground=[("readonly", FIELD), ("disabled", FIELD)],
-                      bordercolor=[("focus", TEXT)])
-        style.configure("TCombobox", arrowsize=px(15), arrowcolor=TEXT, background=BUTTON)
-        style.map("TCombobox", background=[("active", "#404040"), ("readonly", BUTTON)],
-                  arrowcolor=[("disabled", MUTED)])
-        style.configure("Horizontal.TProgressbar", troughcolor=BUTTON, background=TEXT,
-                        bordercolor=BUTTON, lightcolor=TEXT, darkcolor=TEXT, thickness=px(7))
+        self.theme_images = configure_theme(root, px)
 
-        body = self.body = tk.Frame(root, bg=BG, padx=px(32), pady=px(22))
+        body = self.body = tk.Frame(root, bg=BG, padx=px(28), pady=px(23))
         body.pack(expand=True, fill="both")
 
         footer = tk.Frame(body, bg=BG)
@@ -199,8 +167,10 @@ class App:
         self.label(body, "Stem Splitter", size=27, bold=True).pack(anchor="w")
         self.label(body, "Demucs v4  ·  Local processing", color=MUTED).pack(anchor="w", pady=(px(2), px(16)))
 
-        card = tk.Frame(body, bg=PANEL, padx=px(18), pady=px(14), highlightbackground=BORDER, highlightthickness=1)
-        card.pack(fill="x")
+        settings = RoundedPanel(body, outside=BG, fill=PANEL, radius=px(21),
+                                padx=px(19), pady=px(15), outline=BORDER)
+        settings.pack(fill="x")
+        card = settings.content
         self.source_button = self.path_row(card, "Audio file", self.source, self.choose_source)
         self.output_button = self.path_row(card, "Output folder", self.output, self.choose_output, top=12)
 
@@ -217,9 +187,9 @@ class App:
         self.result_button = ttk.Button(actions, text="Open output folder", command=self.open_result)
         self.result_button.pack(side="right")
 
-        self.playback = tk.Frame(body, bg=PANEL, padx=px(12), pady=px(9),
-                                 highlightbackground=BORDER, highlightthickness=1)
-        header = tk.Frame(self.playback, bg=PANEL)
+        self.playback = RoundedPanel(body, outside=BG, fill=PANEL, radius=px(21),
+                                     padx=px(14), pady=px(11), outline=BORDER)
+        header = tk.Frame(self.playback.content, bg=PANEL)
         header.pack(fill="x", pady=(0, px(6)))
         self.label(header, "Stems", bg=PANEL, bold=True).pack(side="left")
         self.stop_button = ttk.Button(header, text="Stop", style="Playback.TButton",
@@ -230,7 +200,7 @@ class App:
         self.select_stems_button.pack(side="right", padx=(0, px(8)))
         self.label(header, "Select stems, then drag", bg=PANEL, color=MUTED).pack(
             side="right", padx=(0, px(10)))
-        self.stem_list = tk.Frame(self.playback, bg=PANEL)
+        self.stem_list = tk.Frame(self.playback.content, bg=PANEL)
         self.stem_list.pack(fill="x")
         self.stem_columns = []
         for column in range(2):
@@ -302,7 +272,7 @@ class App:
         row.pack(fill="x")
         entry = ttk.Entry(row, textvariable=variable, state="readonly")
         entry.pack(side="left", fill="x", expand=True, padx=(0, self.pixels(8)))
-        button = ttk.Button(row, text="Browse…", command=command)
+        button = ttk.Button(row, text="Browse…", style="Panel.TButton", command=command)
         button.pack(side="right")
         return button
 
@@ -559,10 +529,11 @@ class App:
     def show_stems(self, files):
         px = self.pixels
         for index, (stem, path) in enumerate(files.items()):
-            row = tk.Frame(self.stem_columns[index % 2], bg=FIELD, padx=px(8), pady=px(3))
-            row.pack(fill="x", pady=(px(4), 0))
+            row = RoundedPanel(self.stem_columns[index % 2], outside=PANEL, fill=FIELD,
+                               radius=px(11), padx=px(10), pady=px(4))
+            row.pack(fill="x", pady=(px(5), 0))
             self.stem_cards[path] = row
-            controls = tk.Frame(row, bg=FIELD)
+            controls = tk.Frame(row.content, bg=FIELD)
             controls.pack(fill="x")
             checked = tk.BooleanVar(value=False)
             self.stem_selection[path] = checked
@@ -573,11 +544,11 @@ class App:
             icon.pack(side="left", padx=(0, px(7)))
             name = self.label(controls, stem.capitalize(), bg=FIELD)
             name.pack(side="left")
-            button = ttk.Button(controls, text="Play", image=self.play_photo, style="Playback.TButton",
+            button = ttk.Button(controls, text="Play", image=self.play_photo, style="StemPlay.TButton",
                                 command=lambda source=path: self.play_stem(source))
             button.pack(side="right")
             self.play_buttons[path] = button
-            for handle in (row, controls, icon, name):
+            for handle in (row, row.surface, row.content, controls, icon, name):
                 handle.configure(cursor="hand2")
                 handle.bind("<ButtonPress-1>", lambda event, source=path: self.press_stem_card(event, source))
                 handle.bind("<ButtonRelease-1>", lambda event, source=path: self.release_stem_card(event, source))
@@ -639,7 +610,7 @@ class App:
 
     def show_transport(self, card):
         self.transport.pack_forget()
-        self.transport.pack(in_=card, fill="x", pady=(self.pixels(3), 0))
+        self.transport.pack(in_=card.content, fill="x", pady=(self.pixels(3), 0))
         self.transport.tkraise()
         self.fit_playback()
 
