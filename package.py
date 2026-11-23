@@ -1,5 +1,6 @@
 import argparse
 from importlib.metadata import PathDistribution
+from itertools import chain
 from pathlib import Path
 import shutil
 import sysconfig
@@ -60,7 +61,7 @@ def populate(bundle, variant):
         shutil.copy2(ROOT / module, runtime / module)
     models = runtime / "models"
     models.mkdir(exist_ok=True)
-    for filename, _ in MODEL_WEIGHTS.values():
+    for filename, _ in chain.from_iterable(MODEL_WEIGHTS.values()):
         shutil.copy2(BUILD / "models" / filename, models)
     shutil.copy2(ROOT / "README.md", bundle)
 

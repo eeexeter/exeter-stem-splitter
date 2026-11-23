@@ -19,26 +19,36 @@ def status(message, *, device=None):
     print(json.dumps(update), flush=True)
 
 
+def load_checkpoint(checkpoint, checksum):
+    import torch
+    from demucs.states import load_model as restore_model
+
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"The Demucs model file {checkpoint.name} is missing. Extract the entire application archive.")
+    with checkpoint.open("rb") as file:
+        if hashlib.file_digest(file, "sha256").hexdigest() != checksum:
+            raise ValueError(f"The Demucs model file {checkpoint.name} failed its integrity check.")
+        file.seek(0)
+        package = torch.load(file, map_location="cpu", weights_only=True)
+    return restore_model(package).eval()
+
+
 def load_model(cache, model_name):
     import numpy as np
     from numpy._core.multiarray import scalar
     import torch
+    from demucs.apply import BagOfModels
     from demucs.htdemucs import HTDemucs
-    from demucs.states import load_model as restore_model
 
-    filename, checksum = MODEL_WEIGHTS[model_name]
-    checkpoint = cache / filename
     status("Loading the Demucs model…")
-    if not checkpoint.is_file():
-        raise FileNotFoundError("The Demucs model file is missing. Extract the entire application archive.")
-    with checkpoint.open("rb") as file:
-        if hashlib.file_digest(file, "sha256").hexdigest() != checksum:
-            raise ValueError("The Demucs model file failed its integrity check. Extract the application again.")
     globals_for_checkpoint = [Fraction, HTDemucs, np.dtype, np.dtypes.Float64DType,
                               (scalar, "numpy.core.multiarray.scalar")]
     with torch.serialization.safe_globals(globals_for_checkpoint):
-        package = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    return restore_model(package).eval()
+        members = [load_checkpoint(cache / filename, checksum) for filename, checksum in MODEL_WEIGHTS[model_name]]
+    if len(members) == 1:
+        return members[0]
+    # The official htdemucs_ft ensemble takes each source from its corresponding checkpoint.
+    return BagOfModels(members, weights=np.eye(len(members)).tolist()).eval()
 
 
 BLOCK_SECONDS = 60
@@ -169,6 +179,7 @@ def separate(source, destination, cache, model_name=DEFAULT_MODEL, excluded=()):
         raise ValueError("Choose the 6-stem model to exclude guitar or piano.")
     status("Starting…")
     import torch
+    from demucs.apply import BagOfModels
 
     torch.set_num_threads(min(6, os.cpu_count() or 1))
     model = load_model(cache, model_name)
@@ -185,7 +196,8 @@ def separate(source, destination, cache, model_name=DEFAULT_MODEL, excluded=()):
                 free_memory, _ = torch.cuda.mem_get_info()
                 if free_memory < 5 * 1024**3:
                     # HTDemucs also pads inside the model to model.segment.
-                    model.segment = min(model.segment, 4)
+                    for member in model.models if isinstance(model, BagOfModels) else (model,):
+                        member.segment = min(member.segment, 4)
                 status("Splitting on GPU…", device="GPU")
                 peak = split_blocks(model, decoded, separated, frames, block_size, mean, scale, "cuda")
             except RuntimeError as exc:

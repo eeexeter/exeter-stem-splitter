@@ -51,10 +51,13 @@ if ($Variant -ne 'CPU' -and -not ((Test-Path -LiteralPath (Join-Path $cudaSite '
 
 $embedded = Join-Path $buildRoot 'python-embed.zip'
 Get-VerifiedDownload 'https://www.python.org/ftp/python/3.14.4/python-3.14.4-embed-amd64.zip' $embedded 'cda80a9b1e75c0f1b4f9872ca1b417f0d19bce32facc811aea9180e70fad5fb9'
-$weights = Join-Path $models '955717e8-8726e21a.th'
-Get-VerifiedDownload 'https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th' $weights '8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4'
-$weights6s = Join-Path $models '5c90dfd2-34c22ccb.th'
-Get-VerifiedDownload 'https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/5c90dfd2-34c22ccb.th' $weights6s '34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd'
+$weightsJson = Invoke-Checked $python @('-c', 'import json; from itertools import chain; from models import MODEL_WEIGHTS; print(json.dumps(dict(chain.from_iterable(MODEL_WEIGHTS.values()))))')
+$weights = ConvertFrom-Json -InputObject $weightsJson
+foreach ($checkpoint in $weights.PSObject.Properties) {
+    $filename = $checkpoint.Name
+    $target = Join-Path $models $filename
+    Get-VerifiedDownload "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/$filename" $target $checkpoint.Value
+}
 
 $manifest = Join-Path $PSScriptRoot 'windows.manifest'
 $icon = Join-Path $PSScriptRoot 'stem-splitter-taskbar.ico'

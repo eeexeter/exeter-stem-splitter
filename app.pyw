@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 from tkinterdnd2 import COPY, DND_FILES, REFUSE_DROP, TkinterDnD
 
-from models import DEFAULT_MODEL, MODEL_STEMS, SIX_STEM_MODEL
+from models import DEFAULT_MODEL, MODEL_STEMS, QUALITY_MODEL, SIX_STEM_MODEL
 from stem_icons import stem_icon
 from stem_player import StemPlayer
 from version import VERSION
@@ -27,7 +27,11 @@ PYTHON = ROOT / "runtime" / "python.exe" if FROZEN else ROOT / ".venv" / "Script
 WORKER = (ROOT / "runtime" if FROZEN else ROOT) / "separator.py"
 CACHE = ROOT / ("runtime" if FROZEN else ".runtime") / "models"
 
-MODEL_CHOICES = {"4 stems": DEFAULT_MODEL, "6 stems": SIX_STEM_MODEL}
+MODEL_CHOICES = {
+    "4 stems · Fast": DEFAULT_MODEL,
+    "4 stems · Quality (slower)": QUALITY_MODEL,
+    "6 stems · + Guitar & Piano": SIX_STEM_MODEL,
+}
 
 BG = "#101010"
 PANEL = "#1b1b1b"
@@ -119,7 +123,7 @@ class App:
         self.output = tk.StringVar()
         self.destination = None
         self.track_name = ""
-        self.model = tk.StringVar(value="4 stems")
+        self.model = tk.StringVar(value=next(iter(MODEL_CHOICES)))
         self.state = tk.StringVar(value="Select an audio file")
         self.result = None
         self.player = StemPlayer()
@@ -192,7 +196,7 @@ class App:
         self.output_button = self.path_row(card, "Output folder", self.output, self.choose_output, top=12)
 
         self.label(card, "Model", bg=PANEL, bold=True).pack(anchor="w", pady=(px(12), px(3)))
-        self.model_menu = ttk.Combobox(card, textvariable=self.model, values=tuple(MODEL_CHOICES), width=17)
+        self.model_menu = ttk.Combobox(card, textvariable=self.model, values=tuple(MODEL_CHOICES), width=28)
         self.model_menu.pack(anchor="w")
 
         actions = tk.Frame(body, bg=BG)
