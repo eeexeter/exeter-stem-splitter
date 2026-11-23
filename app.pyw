@@ -135,7 +135,6 @@ class App:
         self.events = queue.Queue()
         self.worker_error = ""
         self.processing_device = None
-        self.cancelled = False
         self.closing = False
         self.drag_active = False
         self.dragging_stem = False
@@ -175,15 +174,16 @@ class App:
         self.output_button = self.path_row(card, "Output folder", self.output, self.choose_output, top=12)
 
         self.label(card, "Model", bg=PANEL, bold=True).pack(anchor="w", pady=(px(12), px(3)))
-        self.model_menu = ttk.Combobox(card, textvariable=self.model, values=tuple(MODEL_CHOICES), width=28)
+        self.model_menu = ttk.Combobox(card, textvariable=self.model, values=tuple(MODEL_CHOICES),
+                                       width=28, exportselection=False)
         self.model_menu.pack(anchor="w")
+        for event in ("<<ComboboxSelected>>", "<FocusOut>"):
+            self.model_menu.bind(event, lambda selection: selection.widget.selection_clear())
 
         actions = tk.Frame(body, bg=BG)
         actions.pack(fill="x", pady=(px(14), 0))
         self.start_button = ttk.Button(actions, text="Split track", style="Primary.TButton", command=self.start)
         self.start_button.pack(side="left")
-        self.cancel_button = ttk.Button(actions, text="Cancel", style="Cancel.TButton", command=self.cancel)
-        self.cancel_button.pack(side="left", padx=(px(8), 0))
         self.result_button = ttk.Button(actions, text="Open output folder", style="Output.TButton",
                                         command=self.open_result)
         self.result_button.pack(side="right")
@@ -367,7 +367,6 @@ class App:
         self.source_button.configure(state="disabled" if busy else "normal")
         self.output_button.configure(state="disabled" if busy or not self.source.get() else "normal")
         self.start_button.configure(state="disabled" if busy or not self.source.get() else "normal")
-        self.cancel_button.configure(state="normal" if busy and not self.cancelled else "disabled")
         self.result_button.configure(state="normal" if self.result and not busy else "disabled")
         self.model_menu.configure(state="disabled" if busy else "readonly")
 
@@ -404,7 +403,6 @@ class App:
             self.show_error(str(exc))
             return
 
-        self.cancelled = False
         self.worker_error = ""
         self.processing_device = None
         self.state.set("Starting…")
@@ -421,7 +419,7 @@ class App:
                     return
             elif "error" in event:
                 self.worker_error = event["error"]
-            elif not self.cancelled:
+            elif not self.closing:
                 if "status" in event:
                     self.state.set(event["status"])
                     self.set_progress()
@@ -446,7 +444,7 @@ class App:
         self.worker_job = None
         error = ""
         try:
-            if not self.cancelled:
+            if not self.closing:
                 if returncode:
                     raise RuntimeError(self.worker_error or f"The audio worker exited with code {returncode}.")
                 staging = Path(self.staging.name)
@@ -479,21 +477,12 @@ class App:
             device = f" · {self.processing_device}" if self.processing_device else ""
             self.state.set(f"Done · Saved {len(self.expected_outputs)} stems{device}")
             self.show_stems({stem: self.result / self.stem_filename(stem) for stem in self.expected_outputs})
-        elif self.cancelled:
-            self.state.set("Cancelled")
         else:
             self.show_error(error)
 
     def show_error(self, detail):
         self.state.set("Couldn't split the track")
         messagebox.showerror("Stem Splitter", detail, parent=self.root)
-
-    def cancel(self):
-        if self.process and not self.cancelled:
-            self.cancelled = True
-            self.worker_job.close()
-            self.state.set("Cancelling…")
-            self.update_buttons()
 
     def stem_filename(self, stem):
         label = "vocal" if stem == "vocals" else stem
@@ -675,9 +664,11 @@ class App:
     def close(self):
         self.hide_drop_overlay()
         self.stop_playback()
+        self.progress.stop()
         if self.process:
             self.closing = True
-            self.cancel()
+            self.worker_job.close()
+            self.state.set("Cancelling…")
         else:
             self.root.destroy()
 

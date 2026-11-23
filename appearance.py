@@ -87,7 +87,6 @@ def configure_theme(root, px):
         style.map(name, background=[(state, backdrop) for state in ("disabled", "active", "pressed")])
 
     button_surface("Primary.TButton", "Split track", BG, primary=True)
-    button_surface("Cancel.TButton", "Cancel", BG)
     button_surface("Output.TButton", "Open output folder", BG)
     button_surface("Panel.TButton", "Browse…", PANEL)
     button_surface("Playback.TButton", "Stop", PANEL, compact=True)
@@ -130,7 +129,8 @@ def configure_theme(root, px):
     style.map("Path.TEntry", background=[("readonly", FIELD), ("disabled", FIELD)])
     style.configure("TCombobox", arrowsize=px(15), arrowcolor=MUTED)
     style.map("TCombobox", background=[("active", "#414141"), ("readonly", BUTTON)],
-              arrowcolor=[("disabled", MUTED)])
+              arrowcolor=[("disabled", MUTED)],
+              selectbackground=[("readonly", FIELD)], selectforeground=[("readonly", TEXT)])
     style.configure("Horizontal.TProgressbar", background=TEXT, troughcolor=BORDER,
                     bordercolor=BORDER, lightcolor=TEXT, darkcolor=TEXT, thickness=px(7))
     return images
