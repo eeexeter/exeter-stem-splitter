@@ -1,5 +1,6 @@
 import ctypes
 from ctypes import wintypes
+from time import monotonic
 import wave
 
 
@@ -79,6 +80,9 @@ class StemPlayer:
         self.use_pcm16 = False
         self.start_frame = 0
         self.frame_bytes = 0
+        self.position_frame = 0
+        self.clock_frame = 0
+        self.clock_started = 0.0
 
     @property
     def duration(self):
@@ -91,12 +95,15 @@ class StemPlayer:
                 self.set_frame(0, paused=False)
             elif self.state == "paused":
                 check(winmm.waveOutRestart(self.handle))
+                self.start_clock()
                 self.state = "playing"
             else:
                 check(winmm.waveOutPause(self.handle))
+                self.position()
                 self.state = "paused"
             return
 
+        position = self.position() if self.state != "ended" else 0
         self.stop()
         try:
             self.reader = wave.open(str(source), "rb")
@@ -116,8 +123,8 @@ class StemPlayer:
             self.handle = handle
             self.frame_bytes = alignment
             self.source = source
-            self.state = "playing"
-            self.fill_buffers()
+            frame = round(position * rate)
+            self.set_frame(frame if frame < self.reader.getnframes() else 0, paused=False)
         except (OSError, wave.Error, EOFError) as exc:
             self.stop()
             raise OSError(str(exc) or "Couldn't read the WAV file.") from exc
@@ -156,30 +163,41 @@ class StemPlayer:
             return 0
         if self.state == "ended":
             return self.duration
+        rate = self.reader.getframerate()
+        if self.state == "paused":
+            return self.position_frame / rate
         time = MultimediaTime(TIME_SAMPLES)
         check(winmm.waveOutGetPosition(self.handle, ctypes.byref(time), ctypes.sizeof(time)))
-        rate = self.reader.getframerate()
         if time.kind == TIME_SAMPLES:
-            offset = time.value / rate
+            frame = self.start_frame + time.value
         elif time.kind == TIME_BYTES:
-            offset = time.value / (self.frame_bytes * rate)
+            frame = self.start_frame + time.value // self.frame_bytes
         elif time.kind == TIME_MS:
-            offset = time.value / 1000
+            frame = self.start_frame + time.value * rate // 1000
         else:
             # Some drivers report another format. Count the completed buffers instead.
             queued_frames = sum(header.length // self.frame_bytes for header, _ in self.buffers)
-            return (self.reader.tell() - queued_frames) / rate
-        return min(self.duration, self.start_frame / rate + offset)
+            frame = self.reader.tell() - queued_frames
+        # Discard backwards readings and ones ahead of what could have played since a reset.
+        reachable = self.clock_frame + int((monotonic() - self.clock_started) * rate)
+        self.position_frame = max(self.position_frame, min(frame, reachable, self.reader.tell()))
+        return self.position_frame / rate
 
     def seek(self, seconds):
         if self.source is not None:
             frame = min(self.reader.getnframes(), max(0, round(seconds * self.reader.getframerate())))
             self.set_frame(frame, paused=self.state != "playing")
+            return frame / self.reader.getframerate()
+
+    def start_clock(self):
+        self.clock_frame = self.position_frame
+        self.clock_started = monotonic()
 
     def set_frame(self, frame, *, paused):
         self.reset_output()
         self.reader.setpos(frame)
         self.start_frame = frame
+        self.position_frame = frame
         self.eof = frame == self.reader.getnframes()
         if self.eof:
             self.state = "ended"
@@ -188,6 +206,7 @@ class StemPlayer:
             check(winmm.waveOutPause(self.handle))
         else:
             check(winmm.waveOutRestart(self.handle))
+            self.start_clock()
         self.state = "paused" if paused else "playing"
         self.fill_buffers()
 

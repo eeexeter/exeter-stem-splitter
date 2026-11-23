@@ -141,6 +141,7 @@ class App:
         self.cancelled = False
         self.closing = False
         self.drag_active = False
+        self.dragging_stem = False
         self.drop_animation = None
         self.drop_frame = 0
 
@@ -216,14 +217,17 @@ class App:
         self.stop_button = ttk.Button(header, text="Stop", style="Playback.TButton",
                                       command=self.stop_playback)
         self.stop_button.pack(side="right")
+        self.label(header, "Drag a stem to export", bg=PANEL, color=MUTED).pack(
+            side="right", padx=(0, px(10)))
         self.stem_list = tk.Frame(self.playback, bg=PANEL)
         self.stem_list.pack(fill="x")
         for column in range(2):
             self.stem_list.columnconfigure(column, weight=1, uniform="stems")
 
         self.transport = tk.Frame(self.stem_list, bg=FIELD)
-        self.label(self.transport, variable=self.playback_time, bg=FIELD, color=MUTED).pack(
-            side="right", padx=(px(8), 0))
+        self.playback_clock = self.label(self.transport, variable=self.playback_time, bg=FIELD,
+                                         color=MUTED, anchor="e")
+        self.playback_clock.pack(side="right", padx=(px(8), 0))
         self.timeline = Timeline(self.transport, self.playhead, px)
         self.timeline.pack(side="left", fill="x", expand=True)
         self.timeline.bind("<ButtonPress-1>", self.begin_seek)
@@ -288,7 +292,7 @@ class App:
             self.select_source(selected)
 
     def drop_action(self, _event):
-        if self.process is not None:
+        if self.process is not None or self.dragging_stem:
             self.hide_drop_overlay()
             return REFUSE_DROP
         if not self.drag_active:
@@ -325,7 +329,7 @@ class App:
 
     def drop_source(self, event):
         self.hide_drop_overlay()
-        if self.process is not None:
+        if self.process is not None or self.dragging_stem:
             return REFUSE_DROP
         paths = self.root.tk.splitlist(event.data)
         if len(paths) != 1:
@@ -497,6 +501,15 @@ class App:
         label = "vocal" if stem == "vocals" else stem
         return f"{self.track_name} - {label}.wav"
 
+    def start_stem_drag(self, path):
+        if not path.is_file():
+            return REFUSE_DROP
+        self.dragging_stem = True
+        return COPY, DND_FILES, (str(path),)
+
+    def end_stem_drag(self, _event):
+        self.dragging_stem = False
+
     def show_stems(self):
         px = self.pixels
         for index, stem in enumerate(self.expected_outputs):
@@ -504,9 +517,10 @@ class App:
             row.grid(row=index // 2, column=index % 2, sticky="ew", padx=px(3), pady=(px(4), 0))
             controls = tk.Frame(row, bg=FIELD)
             controls.pack(fill="x")
-            stem_icon(controls, ASSETS / "stem-icons" / f"{stem}.png", px(24), FIELD).pack(
-                side="left", padx=(0, px(7)))
-            self.label(controls, stem.capitalize(), bg=FIELD).pack(side="left")
+            icon = stem_icon(controls, ASSETS / "stem-icons" / f"{stem}.png", px(24), FIELD)
+            icon.pack(side="left", padx=(0, px(7)))
+            name = self.label(controls, stem.capitalize(), bg=FIELD)
+            name.pack(side="left")
             path = self.result / self.stem_filename(stem)
             button = ttk.Button(controls, text="Play", width=7, style="Playback.TButton",
                                 command=lambda source=path: self.play_stem(source))
@@ -516,6 +530,11 @@ class App:
             slot = tk.Frame(row, bg=FIELD, height=self.timeline.winfo_reqheight())
             slot.pack(fill="x")
             self.playback_slots[path] = slot
+            for handle in (row, controls, icon, name, slot):
+                handle.configure(cursor="hand2")
+                handle.drag_source_register(1, DND_FILES)
+                handle.dnd_bind("<<DragInitCmd>>", lambda _event, source=path: self.start_stem_drag(source))
+                handle.dnd_bind("<<DragEndCmd>>", self.end_stem_drag)
         self.update_playback_buttons()
         self.playback.pack(fill="x", pady=(px(12), 0))
         self.fit_playback()
@@ -541,6 +560,7 @@ class App:
         try:
             self.player.play(path)
             self.timeline.set_duration(self.player.duration)
+            self.playback_clock.configure(width=2 * len(clock_time(self.player.duration)) + 3)
             self.update_playhead(self.player.position())
             self.transport.place(in_=self.playback_slots[path], relwidth=1, relheight=1)
             self.transport.tkraise()
@@ -588,8 +608,7 @@ class App:
     def seek_to(self, position):
         if self.player.source is not None:
             try:
-                self.player.seek(position)
-                self.update_playhead(self.player.position())
+                self.update_playhead(self.player.seek(position))
                 self.update_playback_buttons()
             except OSError as exc:
                 self.playback_error(exc)
