@@ -1,6 +1,6 @@
 from math import cos, pi, sin
 import tkinter as tk
-from tkinter import ttk
+from tkinter import font, ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
@@ -51,17 +51,51 @@ def configure_theme(root, px):
         images.append(result)
         return result
 
-    style.configure("TButton", padding=(px(14), px(8)), background=BUTTON, foreground=TEXT,
-                    bordercolor=BORDER, lightcolor=BUTTON, darkcolor=BUTTON)
-    style.map("TButton", background=[("pressed", "#2c2c2c"), ("active", "#414141")],
-              foreground=[("disabled", "#858585")])
-    style.configure("Primary.TButton", background=TEXT, foreground=BG,
-                    bordercolor=TEXT, lightcolor=TEXT, darkcolor=TEXT,
-                    font=("Segoe UI", 10, "bold"))
-    style.map("Primary.TButton", background=[("disabled", BUTTON), ("pressed", "#bdbdbd"), ("active", "#dedede")],
-              bordercolor=[("disabled", BORDER)])
-    for name in ("Playback.TButton", "StemPlay.TButton"):
-        style.configure(name, padding=(px(9), px(3)))
+    normal_font = font.Font(root=root, family="Segoe UI", size=10)
+    bold_font = font.Font(root=root, family="Segoe UI", size=10, weight="bold")
+
+    def button_surface(name, text, backdrop, *, compact=False, primary=False, icon=False):
+        button_font = bold_font if primary else normal_font
+        width = px(20) if icon else button_font.measure(text)
+        height = px(20) if icon else button_font.metrics("linespace")
+        size = (width + 2 * px(9 if compact else 14), height + 2 * px(4 if compact else 8))
+        radius = min(px(12 if icon else 10), size[1] // 2)
+        normal, pressed, hover = (TEXT, "#bdbdbd", "#dedede") if primary else (BUTTON, "#2c2c2c", "#414141")
+        border = None if primary else BORDER
+
+        def button_photo(fill, outline):
+            # Draw each fixed-size button once. Tk can blit it without stretching a texture.
+            image = Image.new("RGB", (size[0] * 3, size[1] * 3), backdrop)
+            ImageDraw.Draw(image).rounded_rectangle(
+                (0, 0, image.width - 1, image.height - 1), radius=radius * 3,
+                fill=fill, outline=outline, width=max(1, px(1)) * 3,
+            )
+            return photo(image, size)
+
+        element = f"Rounded.{name}.border"
+        style.element_create(element, "image", button_photo(normal, border),
+                             ("disabled", button_photo(PANEL, BORDER)),
+                             ("pressed", button_photo(pressed, border)),
+                             ("focus", button_photo(normal, MUTED)),
+                             ("active", button_photo(hover, border)),
+                             padding=0, sticky="")
+        layout = [(element, {"sticky": "nsew", "children": [
+            ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": "nsew"})]})
+        ]})]
+        style.layout(name, layout)
+        style.configure(name, background=backdrop)
+        style.map(name, background=[(state, backdrop) for state in ("disabled", "active", "pressed")])
+
+    button_surface("Primary.TButton", "Split track", BG, primary=True)
+    button_surface("Cancel.TButton", "Cancel", BG)
+    button_surface("Output.TButton", "Open output folder", BG)
+    button_surface("Panel.TButton", "Browse…", PANEL)
+    button_surface("Playback.TButton", "Stop", PANEL, compact=True)
+    button_surface("Selection.TButton", "Clear selection", PANEL, compact=True)
+    button_surface("StemPlay.TButton", "", FIELD, compact=True, icon=True)
+    style.configure("TButton", padding=0, width=0, foreground=TEXT, font=("Segoe UI", 10))
+    style.map("TButton", foreground=[("disabled", "#858585")])
+    style.configure("Primary.TButton", foreground=BG, font=("Segoe UI", 10, "bold"))
 
     def checkmark(selected, outline):
         size = px(15)

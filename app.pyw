@@ -182,9 +182,10 @@ class App:
         actions.pack(fill="x", pady=(px(14), 0))
         self.start_button = ttk.Button(actions, text="Split track", style="Primary.TButton", command=self.start)
         self.start_button.pack(side="left")
-        self.cancel_button = ttk.Button(actions, text="Cancel", command=self.cancel)
+        self.cancel_button = ttk.Button(actions, text="Cancel", style="Cancel.TButton", command=self.cancel)
         self.cancel_button.pack(side="left", padx=(px(8), 0))
-        self.result_button = ttk.Button(actions, text="Open output folder", command=self.open_result)
+        self.result_button = ttk.Button(actions, text="Open output folder", style="Output.TButton",
+                                        command=self.open_result)
         self.result_button.pack(side="right")
 
         self.playback = RoundedPanel(body, outside=BG, fill=PANEL, radius=px(21),
@@ -195,7 +196,7 @@ class App:
         self.stop_button = ttk.Button(header, text="Stop", style="Playback.TButton",
                                       command=self.stop_playback)
         self.stop_button.pack(side="right")
-        self.select_stems_button = ttk.Button(header, text="Select all", width=14, style="Playback.TButton",
+        self.select_stems_button = ttk.Button(header, text="Select all", style="Selection.TButton",
                                              command=self.toggle_stem_selection)
         self.select_stems_button.pack(side="right", padx=(0, px(8)))
         self.label(header, "Select stems, then drag", bg=PANEL, color=MUTED).pack(
