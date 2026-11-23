@@ -1,0 +1,579 @@
+import ctypes
+import json
+import os
+from pathlib import Path
+import queue
+import sys
+import tempfile
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+from PIL import Image, ImageTk
+from tkinterdnd2 import COPY, DND_FILES, REFUSE_DROP, TkinterDnD
+
+from models import DEFAULT_MODEL, MODEL_STEMS, SIX_STEM_MODEL
+from stem_icons import stem_icon
+from stem_player import StemPlayer
+from version import VERSION
+from windows_dialog import documents_folder, open_audio_file
+from worker_job import start_worker
+
+
+FROZEN = getattr(sys, "frozen", False)
+ASSETS = Path(__file__).resolve().parent
+ROOT = Path(sys.executable).resolve().parent if FROZEN else ASSETS
+PYTHON = ROOT / "runtime" / "python.exe" if FROZEN else ROOT / ".venv" / "Scripts" / "python.exe"
+WORKER = (ROOT / "runtime" if FROZEN else ROOT) / "separator.py"
+CACHE = ROOT / ("runtime" if FROZEN else ".runtime") / "models"
+
+MODEL_CHOICES = {"4 stems": DEFAULT_MODEL, "6 stems": SIX_STEM_MODEL}
+
+BG = "#101010"
+PANEL = "#1b1b1b"
+FIELD = "#121212"
+TEXT = "#f6f6f6"
+MUTED = "#b3b3b3"
+BORDER = "#454545"
+BUTTON = "#292929"
+DROP_ICON_SCALES = (0.62, 0.75, 0.85, 0.92, 0.96, 0.985, 1.0)
+
+
+def clock_time(seconds):
+    minutes, seconds = divmod(int(seconds), 60)
+    if minutes >= 60:
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def read_worker(process, events):
+    with process.stdout:
+        for line in process.stdout:
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    events.put(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    events.put({"exit": process.wait()})
+
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.display_scale = root.winfo_fpixels("1i") / 96
+        px = self.pixels
+        self.source = tk.StringVar()
+        self.output = tk.StringVar()
+        self.destination = None
+        self.track_name = ""
+        self.model = tk.StringVar(value="4 stems")
+        self.state = tk.StringVar(value="Select an audio file")
+        self.result = None
+        self.player = StemPlayer()
+        self.play_buttons = {}
+        self.seeking = False
+        self.playhead = tk.DoubleVar()
+        self.playback_time = tk.StringVar(value="0:00 / 0:00")
+        self.playback_stem = tk.StringVar()
+        self.process = None
+        self.worker_job = None
+        self.staging = None
+        self.events = queue.Queue()
+        self.worker_error = ""
+        self.processing_device = None
+        self.cancelled = False
+        self.closing = False
+        self.drag_active = False
+        self.drop_animation = None
+        self.drop_frame = 0
+
+        root.title(f"Stem Splitter {VERSION} — Demucs")
+        root.configure(background=BG)
+        root.geometry(f"{px(680)}x{px(465)}")
+        root.minsize(px(590), px(450))
+        root.protocol("WM_DELETE_WINDOW", self.close)
+        root.option_add("*Font", ("Segoe UI", 10))
+        root.option_add("*TCombobox*Listbox.background", PANEL)
+        root.option_add("*TCombobox*Listbox.foreground", TEXT)
+        root.option_add("*TCombobox*Listbox.selectBackground", TEXT)
+        root.option_add("*TCombobox*Listbox.selectForeground", BG)
+
+        style = ttk.Style(root)
+        style.theme_use("clam")
+        style.configure("TButton", padding=(px(14), px(8)), background=BUTTON, foreground=TEXT,
+                        bordercolor=BORDER, lightcolor=BUTTON, darkcolor=BUTTON)
+        style.map("TButton", background=[("active", "#404040")], foreground=[("disabled", "#888888")])
+        style.configure("Primary.TButton", background=TEXT, foreground=BG,
+                        bordercolor=TEXT, lightcolor=TEXT, darkcolor=TEXT,
+                        font=("Segoe UI", 10, "bold"))
+        style.map("Primary.TButton", background=[("disabled", BUTTON), ("active", "#dcdcdc")],
+                  bordercolor=[("disabled", BORDER)])
+        style.configure("Playback.TButton", padding=(px(7), px(3)))
+        style.configure("Playback.Horizontal.TScale", troughcolor=BORDER, background=TEXT)
+        style.map("Playback.Horizontal.TScale", background=[("disabled", MUTED), ("active", "#dcdcdc")])
+        for control in ("TEntry", "TCombobox"):
+            style.configure(control, foreground=TEXT, fieldbackground=FIELD, padding=(px(9), px(8)),
+                            bordercolor=BORDER, lightcolor=FIELD, darkcolor=FIELD,
+                            selectbackground=TEXT, selectforeground=BG)
+            style.map(control, fieldbackground=[("readonly", FIELD), ("disabled", FIELD)],
+                      bordercolor=[("focus", TEXT)])
+        style.configure("TCombobox", arrowsize=px(15), arrowcolor=TEXT, background=BUTTON)
+        style.map("TCombobox", background=[("active", "#404040"), ("readonly", BUTTON)],
+                  arrowcolor=[("disabled", MUTED)])
+        style.configure("Horizontal.TProgressbar", troughcolor=BUTTON, background=TEXT,
+                        bordercolor=BUTTON, lightcolor=TEXT, darkcolor=TEXT, thickness=px(7))
+
+        body = self.body = tk.Frame(root, bg=BG, padx=px(32), pady=px(22))
+        body.pack(expand=True, fill="both")
+
+        footer = tk.Frame(body, bg=BG)
+        footer.pack(side="bottom", fill="x", pady=(px(15), 0))
+        self.progress = ttk.Progressbar(footer, maximum=100)
+        self.progress.pack(fill="x", pady=(0, px(5)))
+        self.label(footer, variable=self.state, color=MUTED).pack(anchor="w")
+
+        self.label(body, "Stem Splitter", size=27, bold=True).pack(anchor="w")
+        self.label(body, "Demucs v4  ·  Local processing", color=MUTED).pack(anchor="w", pady=(px(2), px(16)))
+
+        card = tk.Frame(body, bg=PANEL, padx=px(18), pady=px(14), highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill="x")
+        self.source_button = self.path_row(card, "Audio file", self.source, self.choose_source)
+        self.output_button = self.path_row(card, "Output folder", self.output, self.choose_output, top=12)
+
+        self.label(card, "Model", bg=PANEL, bold=True).pack(anchor="w", pady=(px(12), px(3)))
+        self.model_menu = ttk.Combobox(card, textvariable=self.model, values=tuple(MODEL_CHOICES), width=17)
+        self.model_menu.pack(anchor="w")
+
+        actions = tk.Frame(body, bg=BG)
+        actions.pack(fill="x", pady=(px(14), 0))
+        self.start_button = ttk.Button(actions, text="Split track", style="Primary.TButton", command=self.start)
+        self.start_button.pack(side="left")
+        self.cancel_button = ttk.Button(actions, text="Cancel", command=self.cancel)
+        self.cancel_button.pack(side="left", padx=(px(8), 0))
+        self.result_button = ttk.Button(actions, text="Open output folder", command=self.open_result)
+        self.result_button.pack(side="right")
+
+        self.playback = tk.Frame(body, bg=PANEL, padx=px(12), pady=px(9),
+                                 highlightbackground=BORDER, highlightthickness=1)
+        header = tk.Frame(self.playback, bg=PANEL)
+        header.pack(fill="x", pady=(0, px(6)))
+        self.label(header, "Stems", bg=PANEL, bold=True).pack(side="left")
+        self.stop_button = ttk.Button(header, text="Stop", style="Playback.TButton",
+                                      command=self.stop_playback)
+        self.stop_button.pack(side="right")
+        self.stem_list = tk.Frame(self.playback, bg=PANEL)
+        self.stem_list.pack(fill="x")
+        for column in range(2):
+            self.stem_list.columnconfigure(column, weight=1, uniform="stems")
+
+        transport = tk.Frame(self.playback, bg=PANEL)
+        transport.pack(fill="x", pady=(px(8), 0))
+        self.label(transport, variable=self.playback_stem, bg=PANEL, width=7, anchor="w").pack(side="left")
+        self.label(transport, variable=self.playback_time, bg=PANEL, color=MUTED).pack(side="right", padx=(px(8), 0))
+        self.timeline = ttk.Scale(transport, variable=self.playhead, from_=0, to=1, state="disabled",
+                                  style="Playback.Horizontal.TScale")
+        self.timeline.pack(side="left", fill="x", expand=True)
+        self.timeline.bind("<ButtonPress-1>", self.begin_seek)
+        self.timeline.bind("<B1-Motion>", self.preview_seek)
+        self.timeline.bind("<ButtonRelease-1>", self.end_seek)
+        self.timeline.bind("<Left>", lambda _event: self.seek_to(self.playhead.get() - 5))
+        self.timeline.bind("<Right>", lambda _event: self.seek_to(self.playhead.get() + 5))
+        self.timeline.bind("<Home>", lambda _event: self.seek_to(0))
+        self.timeline.bind("<End>", lambda _event: self.seek_to(self.player.duration))
+
+        self.drop_overlay = tk.Canvas(root, bg=BG, highlightthickness=0, borderwidth=0)
+        self.drop_border = self.drop_overlay.create_rectangle(0, 0, 0, 0, outline=MUTED,
+                                                              width=px(2), dash=(px(5), px(5)))
+        with Image.open(ASSETS / "stem-splitter-upload-icon.png") as icon:
+            sizes = [px(128 * scale) for scale in DROP_ICON_SCALES]
+            self.drop_frames = [ImageTk.PhotoImage(icon.resize((size, size), Image.Resampling.LANCZOS,
+                                                               reducing_gap=3), master=root)
+                                for size in sizes]
+        self.drop_icon = self.drop_overlay.create_image(0, 0, image=self.drop_frames[0])
+        self.drop_message = self.drop_overlay.create_text(0, 0, text="Release to add file",
+                                                          fill=TEXT, font=("Segoe UI", 14, "bold"))
+        self.drop_overlay.bind("<Configure>", self.draw_drop_overlay)
+        root.drop_target_register(DND_FILES)
+        root.dnd_bind("<<DropEnter>>", self.drop_action)
+        root.dnd_bind("<<DropPosition>>", self.drop_action)
+        root.dnd_bind("<<DropLeave>>", self.hide_drop_overlay)
+        root.dnd_bind("<<Drop:DND_Files>>", self.drop_source)
+
+        self.update_buttons()
+        self.source_button.focus_set()
+        root.update_idletasks()
+        min_width = max(px(590), body.winfo_reqwidth())
+        min_height = max(px(450), body.winfo_reqheight())
+        root.minsize(min_width, min_height)
+        root.geometry(f"{max(px(680), min_width)}x{max(px(465), min_height)}")
+        root.after(80, self.poll)
+
+    def pixels(self, size):
+        return round(size * self.display_scale)
+
+    @staticmethod
+    def label(parent, text=None, *, variable=None, bg=BG, color=TEXT, size=10, bold=False, **options):
+        return tk.Label(parent, text=text, textvariable=variable, bg=bg, fg=color,
+                        font=("Segoe UI", size, "bold" if bold else "normal"), **options)
+
+    def path_row(self, parent, title, variable, command, top=0):
+        self.label(parent, title, bg=PANEL, bold=True).pack(anchor="w", pady=(self.pixels(top), self.pixels(4)))
+        row = tk.Frame(parent, bg=PANEL)
+        row.pack(fill="x")
+        entry = ttk.Entry(row, textvariable=variable, state="readonly")
+        entry.pack(side="left", fill="x", expand=True, padx=(0, self.pixels(8)))
+        button = ttk.Button(row, text="Browse…", command=command)
+        button.pack(side="right")
+        return button
+
+    def choose_source(self):
+        selected = open_audio_file(self.root, "Select an audio file", [
+            ("Audio files", "*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.opus *.wma *.aiff"),
+            ("All files", "*.*"),
+        ])
+        if selected:
+            self.select_source(selected)
+
+    def drop_action(self, _event):
+        if self.process is not None:
+            self.hide_drop_overlay()
+            return REFUSE_DROP
+        if not self.drag_active:
+            self.drag_active = True
+            self.drop_frame = 0
+            self.drop_overlay.place(x=0, y=0, relwidth=1, relheight=1)
+            tk.Misc.tkraise(self.drop_overlay)
+            self.animate_drop_overlay()
+        return COPY
+
+    def animate_drop_overlay(self):
+        self.drop_overlay.itemconfigure(self.drop_icon, image=self.drop_frames[self.drop_frame])
+        if self.drop_frame + 1 < len(self.drop_frames):
+            self.drop_frame += 1
+            self.drop_animation = self.root.after(16, self.animate_drop_overlay)
+        else:
+            self.drop_animation = None
+
+    def draw_drop_overlay(self, _event=None):
+        overlay = self.drop_overlay
+        width, height = overlay.winfo_width(), overlay.winfo_height()
+        x, y = width / 2, height / 2 - self.pixels(22)
+        margin = self.pixels(14)
+        overlay.coords(self.drop_border, margin, margin, width - margin, height - margin)
+        overlay.coords(self.drop_icon, x, y)
+        overlay.coords(self.drop_message, x, y + self.pixels(82))
+
+    def hide_drop_overlay(self, _event=None):
+        if self.drop_animation is not None:
+            self.root.after_cancel(self.drop_animation)
+            self.drop_animation = None
+        self.drag_active = False
+        self.drop_overlay.place_forget()
+
+    def drop_source(self, event):
+        self.hide_drop_overlay()
+        if self.process is not None:
+            return REFUSE_DROP
+        paths = self.root.tk.splitlist(event.data)
+        if len(paths) != 1:
+            self.state.set("Drop one audio file at a time")
+            return REFUSE_DROP
+        return COPY if self.select_source(paths[0]) else REFUSE_DROP
+
+    def select_source(self, selected):
+        source = Path(selected)
+        if not source.is_file():
+            self.state.set("Select an audio file")
+            return False
+        self.source.set(os.path.normpath(source))
+        # Leave room for the stem suffix within Windows' filename component limit.
+        self.track_name = source.stem.encode("utf-16-le")[:460].decode("utf-16-le", errors="ignore")
+        self.set_output_parent(documents_folder())
+        self.clear_result()
+        self.set_progress(0)
+        self.state.set("")
+        self.update_buttons()
+        return True
+
+    def choose_output(self):
+        selected = filedialog.askdirectory(parent=self.root,
+                                           title="Choose where to save the stems",
+                                           initialdir=self.destination.parent)
+        if selected:
+            self.set_output_parent(Path(selected))
+
+    def set_output_parent(self, parent):
+        self.destination = parent / f"{self.track_name} stems"
+        self.output.set(str(self.destination))
+
+    def update_buttons(self):
+        busy = self.process is not None
+        self.source_button.configure(state="disabled" if busy else "normal")
+        self.output_button.configure(state="disabled" if busy or not self.source.get() else "normal")
+        self.start_button.configure(state="disabled" if busy or not self.source.get() else "normal")
+        self.cancel_button.configure(state="normal" if busy and not self.cancelled else "disabled")
+        self.result_button.configure(state="normal" if self.result and not busy else "disabled")
+        self.model_menu.configure(state="disabled" if busy else "readonly")
+
+    def set_progress(self, value=None):
+        self.progress.stop()
+        if value is None:
+            self.progress.configure(mode="indeterminate")
+            self.progress.start(12)
+        else:
+            self.progress.configure(mode="determinate", value=value)
+
+    def start(self):
+        self.hide_drop_overlay()
+        source = Path(self.source.get())
+        output = self.destination
+        model = MODEL_CHOICES[self.model.get()]
+        self.expected_outputs = MODEL_STEMS[model]
+        self.clear_result()
+        try:
+            if not source.is_file():
+                raise FileNotFoundError("The selected audio file was not found.")
+            if not PYTHON.is_file() or not WORKER.is_file():
+                raise FileNotFoundError("The runtime folder must be next to Stem Splitter.exe.")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            self.staging = tempfile.TemporaryDirectory(prefix=".demucs-", dir=output.parent, ignore_cleanup_errors=True)
+            command = [str(PYTHON), "-u", str(WORKER), str(source), self.staging.name, str(CACHE),
+                       "--model", model, "--wait-for-start"]
+            self.process, self.worker_job = start_worker(command)
+        except OSError as exc:
+            if self.staging:
+                self.staging.cleanup()
+                self.staging = None
+            self.update_buttons()
+            self.show_error(str(exc))
+            return
+
+        self.cancelled = False
+        self.worker_error = ""
+        self.processing_device = None
+        self.state.set("Starting…")
+        self.set_progress()
+        self.update_buttons()
+        threading.Thread(target=read_worker, args=(self.process, self.events), daemon=True).start()
+
+    def poll(self):
+        while not self.events.empty():
+            event = self.events.get_nowait()
+            if "exit" in event:
+                self.finish(event["exit"])
+                if self.closing:
+                    return
+            elif "error" in event:
+                self.worker_error = event["error"]
+            elif not self.cancelled:
+                if "status" in event:
+                    self.state.set(event["status"])
+                    self.set_progress()
+                    if "device" in event:
+                        self.processing_device = event["device"]
+                elif "progress" in event:
+                    self.set_progress(event["progress"])
+        if self.player.source is not None:
+            try:
+                previous_state = self.player.state
+                self.player.poll()
+                if self.player.state != previous_state:
+                    self.update_playback_buttons()
+                if not self.seeking:
+                    self.update_playhead(self.player.position())
+            except OSError as exc:
+                self.playback_error(exc)
+        self.root.after(80, self.poll)
+
+    def finish(self, returncode):
+        self.process = None
+        self.worker_job.close()
+        self.worker_job = None
+        error = ""
+        try:
+            if not self.cancelled:
+                if returncode:
+                    raise RuntimeError(self.worker_error or f"The audio worker exited with code {returncode}.")
+                staging = Path(self.staging.name)
+                if {file.stem for file in staging.glob("*.wav") if file.stat().st_size > 44} != set(self.expected_outputs):
+                    raise RuntimeError("Demucs did not save all requested WAV files.")
+                for stem in self.expected_outputs:
+                    (staging / f"{stem}.wav").rename(staging / self.stem_filename(stem))
+                destination = self.destination
+                index = 1
+                while True:
+                    result = destination if index == 1 else destination.with_name(f"{destination.name} ({index})")
+                    try:
+                        self.result = staging.rename(result)
+                        break
+                    except FileExistsError:
+                        index += 1
+        except (OSError, RuntimeError) as exc:
+            error = str(exc)
+        finally:
+            self.staging.cleanup()
+            self.staging = None
+
+        if self.closing:
+            self.root.destroy()
+            return
+        self.update_buttons()
+        self.set_progress(100 if self.result else 0)
+        if self.result:
+            self.output.set(str(self.result))
+            device = f" · {self.processing_device}" if self.processing_device else ""
+            self.state.set(f"Done · Saved {len(self.expected_outputs)} stems{device}")
+            self.show_stems()
+        elif self.cancelled:
+            self.state.set("Cancelled")
+        else:
+            self.show_error(error)
+
+    def show_error(self, detail):
+        self.state.set("Couldn't split the track")
+        messagebox.showerror("Stem Splitter", detail, parent=self.root)
+
+    def cancel(self):
+        if self.process and not self.cancelled:
+            self.cancelled = True
+            self.worker_job.close()
+            self.state.set("Cancelling…")
+            self.update_buttons()
+
+    def stem_filename(self, stem):
+        label = "vocal" if stem == "vocals" else stem
+        return f"{self.track_name} - {label}.wav"
+
+    def show_stems(self):
+        px = self.pixels
+        for index, stem in enumerate(self.expected_outputs):
+            row = tk.Frame(self.stem_list, bg=FIELD, padx=px(8), pady=px(3))
+            row.grid(row=index // 2, column=index % 2, sticky="ew", padx=px(3), pady=px(3))
+            stem_icon(row, stem, px(24), FIELD, TEXT).pack(side="left", padx=(0, px(7)))
+            self.label(row, stem.capitalize(), bg=FIELD).pack(side="left")
+            path = self.result / self.stem_filename(stem)
+            button = ttk.Button(row, text="Play", width=7, style="Playback.TButton",
+                                command=lambda source=path, label=stem.capitalize(): self.play_stem(source, label))
+            button.pack(side="right")
+            self.play_buttons[path] = button
+        self.update_playback_buttons()
+        self.playback.pack(fill="x", pady=(px(12), 0))
+        self.fit_playback()
+
+    def clear_result(self):
+        self.stop_playback()
+        self.result = None
+        if self.play_buttons:
+            self.playback.pack_forget()
+            for row in self.stem_list.winfo_children():
+                row.destroy()
+            self.play_buttons.clear()
+            self.fit_playback()
+
+    def fit_playback(self):
+        self.root.update_idletasks()
+        width, _ = self.root.minsize()
+        self.root.minsize(width, max(self.pixels(450), self.body.winfo_reqheight()))
+
+    def play_stem(self, path, label):
+        self.seeking = False
+        try:
+            self.player.play(path)
+            self.playback_stem.set(label)
+            self.timeline.configure(to=self.player.duration or 1, state="normal")
+            self.update_playhead(self.player.position())
+        except OSError as exc:
+            self.playback_error(exc)
+        self.update_playback_buttons()
+
+    def stop_playback(self):
+        try:
+            self.player.stop()
+        except OSError as exc:
+            self.playback_error(exc)
+        self.reset_timeline()
+        self.update_playback_buttons()
+
+    def reset_timeline(self):
+        self.seeking = False
+        self.timeline.configure(to=1, state="disabled")
+        self.playback_stem.set("")
+        self.update_playhead(0)
+
+    def update_playhead(self, position):
+        self.playhead.set(position)
+        self.playback_time.set(f"{clock_time(position)} / {clock_time(self.player.duration)}")
+
+    def begin_seek(self, event):
+        if self.player.source is not None:
+            self.timeline.focus_set()
+            self.seeking = True
+            self.preview_seek(event)
+        return "break"
+
+    def preview_seek(self, event):
+        if self.seeking:
+            position = max(0, min(self.player.duration, self.timeline.get(event.x, event.y)))
+            self.update_playhead(position)
+        return "break"
+
+    def end_seek(self, event):
+        if self.seeking:
+            self.preview_seek(event)
+            self.seeking = False
+            self.seek_to(self.playhead.get())
+        return "break"
+
+    def seek_to(self, position):
+        if self.player.source is not None:
+            try:
+                self.player.seek(position)
+                self.update_playhead(self.player.position())
+                self.update_playback_buttons()
+            except OSError as exc:
+                self.playback_error(exc)
+        return "break"
+
+    def update_playback_buttons(self):
+        active = self.player.source
+        active_text = {"paused": "Resume", "playing": "Pause"}.get(self.player.state, "Play")
+        for path, button in self.play_buttons.items():
+            button.configure(text=active_text if path == active else "Play")
+        self.stop_button.configure(state="normal" if active else "disabled")
+
+    def playback_error(self, error):
+        try:
+            self.player.stop()
+        except OSError:
+            pass
+        self.reset_timeline()
+        self.update_playback_buttons()
+        self.state.set("Couldn't play the stem")
+        messagebox.showerror("Couldn't play the stem", str(error), parent=self.root)
+
+    def close(self):
+        self.hide_drop_overlay()
+        self.stop_playback()
+        if self.process:
+            self.closing = True
+            self.cancel()
+        else:
+            self.root.destroy()
+
+    def open_result(self):
+        try:
+            os.startfile(self.result)
+        except OSError as exc:
+            messagebox.showerror("Couldn't open the output folder", str(exc), parent=self.root)
+
+
+if __name__ == "__main__":
+    if not FROZEN:
+        # The packaged executable gets the same setting from its manifest.
+        ctypes.windll.user32.SetProcessDPIAware()
+    window = TkinterDnD.Tk()
+    window.iconbitmap(default=str(ASSETS / "stem-splitter-taskbar.ico"))
+    App(window)
+    window.mainloop()
