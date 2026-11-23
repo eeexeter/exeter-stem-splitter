@@ -9,11 +9,10 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 from tkinterdnd2 import COPY, DND_FILES, REFUSE_DROP, TkinterDnD
 
 from models import DEFAULT_MODEL, MODEL_STEMS, QUALITY_MODEL, SIX_STEM_MODEL
-from recent_results import RecentResult, find_existing_result, recent_results, remember_result
 from stem_icons import stem_icon
 from stem_player import StemPlayer
 from version import VERSION
@@ -129,8 +128,9 @@ class App:
         self.result = None
         self.player = StemPlayer()
         self.play_buttons = {}
-        self.playback_slots = {}
+        self.stem_cards = {}
         self.stem_selection = {}
+        self.card_press = None
         self.seeking = False
         self.playhead = tk.DoubleVar()
         self.playback_time = tk.StringVar(value="0:00 / 0:00")
@@ -163,9 +163,6 @@ class App:
         style.configure("TButton", padding=(px(14), px(8)), background=BUTTON, foreground=TEXT,
                         bordercolor=BORDER, lightcolor=BUTTON, darkcolor=BUTTON)
         style.map("TButton", background=[("active", "#404040")], foreground=[("disabled", "#888888")])
-        style.configure("TMenubutton", padding=(px(10), px(6)), background=BUTTON, foreground=TEXT,
-                        bordercolor=BORDER, arrowcolor=TEXT)
-        style.map("TMenubutton", background=[("active", "#404040")], foreground=[("disabled", "#888888")])
         style.configure("Primary.TButton", background=TEXT, foreground=BG,
                         bordercolor=TEXT, lightcolor=TEXT, darkcolor=TEXT,
                         font=("Segoe UI", 10, "bold"))
@@ -198,13 +195,7 @@ class App:
         self.progress.pack(fill="x", pady=(0, px(5)))
         self.label(footer, variable=self.state, color=MUTED).pack(anchor="w")
 
-        heading = tk.Frame(body, bg=BG)
-        heading.pack(fill="x")
-        self.label(heading, "Stem Splitter", size=27, bold=True).pack(side="left")
-        self.recent_button = ttk.Menubutton(heading, text="Recent results")
-        self.recent_button.pack(side="right")
-        self.recent_menu = self.result_menu(self.recent_button, postcommand=self.show_recent_menu)
-        self.recent_button.configure(menu=self.recent_menu)
+        self.label(body, "Stem Splitter", size=27, bold=True).pack(anchor="w")
         self.label(body, "Demucs v4  ·  Local processing", color=MUTED).pack(anchor="w", pady=(px(2), px(16)))
 
         card = tk.Frame(body, bg=PANEL, padx=px(18), pady=px(14), highlightbackground=BORDER, highlightthickness=1)
@@ -240,9 +231,21 @@ class App:
             side="right", padx=(0, px(10)))
         self.stem_list = tk.Frame(self.playback, bg=PANEL)
         self.stem_list.pack(fill="x")
+        self.stem_columns = []
         for column in range(2):
             self.stem_list.columnconfigure(column, weight=1, uniform="stems")
+            stack = tk.Frame(self.stem_list, bg=PANEL)
+            stack.grid(row=0, column=column, sticky="new", padx=px(3))
+            self.stem_columns.append(stack)
 
+        size = (px(20), px(20))
+        with Image.open(ASSETS / "stem-icons" / "play.png") as play:
+            self.play_photo = ImageTk.PhotoImage(play.resize(size, Image.Resampling.LANCZOS), master=root)
+        pause = Image.new("RGBA", (96, 96))
+        bars = ImageDraw.Draw(pause)
+        for x in (25, 54):
+            bars.rounded_rectangle((x, 14, x + 16, 82), radius=6, fill=TEXT)
+        self.pause_photo = ImageTk.PhotoImage(pause.resize(size, Image.Resampling.LANCZOS), master=root)
         self.transport = tk.Frame(self.stem_list, bg=FIELD)
         self.playback_clock = self.label(self.transport, variable=self.playback_time, bg=FIELD,
                                          color=MUTED, anchor="e")
@@ -389,7 +392,6 @@ class App:
         self.start_button.configure(state="disabled" if busy or not self.source.get() else "normal")
         self.cancel_button.configure(state="normal" if busy and not self.cancelled else "disabled")
         self.result_button.configure(state="normal" if self.result and not busy else "disabled")
-        self.recent_button.configure(state="disabled" if busy else "normal")
         self.model_menu.configure(state="disabled" if busy else "readonly")
 
     def set_progress(self, value=None):
@@ -500,10 +502,7 @@ class App:
             self.output.set(str(self.result))
             device = f" · {self.processing_device}" if self.processing_device else ""
             self.state.set(f"Done · Saved {len(self.expected_outputs)} stems{device}")
-            entry = RecentResult(self.result.resolve(),
-                                 {stem: self.stem_filename(stem) for stem in self.expected_outputs})
-            self.save_recent(entry)
-            self.show_stems(entry.available_files())
+            self.show_stems({stem: self.result / self.stem_filename(stem) for stem in self.expected_outputs})
         elif self.cancelled:
             self.state.set("Cancelled")
         else:
@@ -525,6 +524,7 @@ class App:
         return f"{self.track_name} - {label}.wav"
 
     def start_stem_drag(self, path):
+        self.card_press = None
         paths = (path,)
         if self.stem_selection[path].get():
             paths = tuple(selected for selected, checked in self.stem_selection.items() if checked.get())
@@ -536,6 +536,15 @@ class App:
 
     def end_stem_drag(self, _event):
         self.dragging_stem = False
+
+    def press_stem_card(self, event, path):
+        self.card_press = (path, event.x_root, event.y_root)
+
+    def release_stem_card(self, event, path):
+        press, self.card_press = self.card_press, None
+        if press is not None and press[0] == path and not self.dragging_stem:
+            if max(abs(event.x_root - press[1]), abs(event.y_root - press[2])) <= self.pixels(4):
+                self.play_stem(path)
 
     def toggle_stem_selection(self):
         selected = not all(checked.get() for checked in self.stem_selection.values())
@@ -550,8 +559,9 @@ class App:
     def show_stems(self, files):
         px = self.pixels
         for index, (stem, path) in enumerate(files.items()):
-            row = tk.Frame(self.stem_list, bg=FIELD, padx=px(8), pady=px(3))
-            row.grid(row=index // 2, column=index % 2, sticky="ew", padx=px(3), pady=(px(4), 0))
+            row = tk.Frame(self.stem_columns[index % 2], bg=FIELD, padx=px(8), pady=px(3))
+            row.pack(fill="x", pady=(px(4), 0))
+            self.stem_cards[path] = row
             controls = tk.Frame(row, bg=FIELD)
             controls.pack(fill="x")
             checked = tk.BooleanVar(value=False)
@@ -563,16 +573,14 @@ class App:
             icon.pack(side="left", padx=(0, px(7)))
             name = self.label(controls, stem.capitalize(), bg=FIELD)
             name.pack(side="left")
-            button = ttk.Button(controls, text="Play", width=7, style="Playback.TButton",
+            button = ttk.Button(controls, text="Play", image=self.play_photo, style="Playback.TButton",
                                 command=lambda source=path: self.play_stem(source))
             button.pack(side="right")
             self.play_buttons[path] = button
-            # The timeline uses this space without changing either column's geometry.
-            slot = tk.Frame(row, bg=FIELD, height=self.timeline.winfo_reqheight())
-            slot.pack(fill="x")
-            self.playback_slots[path] = slot
-            for handle in (row, controls, icon, name, slot):
+            for handle in (row, controls, icon, name):
                 handle.configure(cursor="hand2")
+                handle.bind("<ButtonPress-1>", lambda event, source=path: self.press_stem_card(event, source))
+                handle.bind("<ButtonRelease-1>", lambda event, source=path: self.release_stem_card(event, source))
                 handle.drag_source_register(1, DND_FILES)
                 handle.dnd_bind("<<DragInitCmd>>", lambda _event, source=path: self.start_stem_drag(source))
                 handle.dnd_bind("<<DragEndCmd>>", self.end_stem_drag)
@@ -586,10 +594,10 @@ class App:
         self.result = None
         if self.play_buttons:
             self.playback.pack_forget()
-            for slot in self.playback_slots.values():
-                slot.master.destroy()
+            for row in self.stem_cards.values():
+                row.destroy()
             self.play_buttons.clear()
-            self.playback_slots.clear()
+            self.stem_cards.clear()
             self.stem_selection.clear()
             self.fit_playback()
 
@@ -600,13 +608,17 @@ class App:
 
     def play_stem(self, path):
         self.seeking = False
+        show_timeline = self.player.source != path
         try:
             self.player.play(path)
             self.timeline.set_duration(self.player.duration)
             self.playback_clock.configure(width=2 * len(clock_time(self.player.duration)) + 3)
             self.update_playhead(self.player.position())
-            self.transport.place(in_=self.playback_slots[path], relwidth=1, relheight=1)
-            self.transport.tkraise()
+            if show_timeline:
+                self.transport.pack_forget()
+                self.transport.pack(in_=self.stem_cards[path], fill="x", pady=(self.pixels(3), 0))
+                self.transport.tkraise()
+                self.fit_playback()
         except OSError as exc:
             self.playback_error(exc)
         self.update_playback_buttons()
@@ -621,9 +633,12 @@ class App:
 
     def reset_timeline(self):
         self.seeking = False
+        self.card_press = None
         self.timeline.set_duration(0)
         self.update_playhead(0)
-        self.transport.place_forget()
+        if self.transport.winfo_manager():
+            self.transport.pack_forget()
+            self.fit_playback()
 
     def update_playhead(self, position):
         self.playhead.set(position)
@@ -661,7 +676,9 @@ class App:
         active = self.player.source
         active_text = {"paused": "Resume", "playing": "Pause"}.get(self.player.state, "Play")
         for path, button in self.play_buttons.items():
-            button.configure(text=active_text if path == active else "Play")
+            playing = path == active and self.player.state == "playing"
+            button.configure(text=active_text if path == active else "Play",
+                             image=self.pause_photo if playing else self.play_photo)
         self.stop_button.configure(state="normal" if active else "disabled")
 
     def playback_error(self, error):
@@ -683,62 +700,11 @@ class App:
         else:
             self.root.destroy()
 
-    def result_menu(self, parent, **options):
-        return tk.Menu(parent, tearoff=False, bg=PANEL, fg=TEXT, activebackground=TEXT,
-                       activeforeground=BG, **options)
-
-    def show_recent_menu(self):
-        self.recent_menu.delete(0, "end")
-        for child in self.recent_menu.winfo_children():
-            child.destroy()
-        for entry in recent_results():
-            actions = self.result_menu(self.recent_menu)
-            actions.add_command(label="Listen", command=lambda result=entry: self.listen_to_result(result))
-            actions.add_command(label="Open folder", command=lambda result=entry: self.open_result(result.folder))
-            name = entry.folder.name
-            self.recent_menu.add_cascade(label=name if len(name) <= 55 else name[:52] + "…", menu=actions)
-        if self.recent_menu.index("end") is None:
-            self.recent_menu.add_command(label="No recent results", state="disabled")
-        self.recent_menu.add_separator()
-        self.recent_menu.add_command(label="Open existing stem folder…", command=self.open_existing_result)
-
-    def open_existing_result(self):
-        selected = filedialog.askdirectory(parent=self.root, initialdir=documents_folder(),
-                                           title="Open an existing stem folder", mustexist=True)
-        if selected:
-            try:
-                self.listen_to_result(find_existing_result(Path(selected)), save=True)
-            except (OSError, ValueError) as exc:
-                messagebox.showerror("Couldn't open the result", str(exc), parent=self.root)
-
-    def listen_to_result(self, entry, *, save=False):
-        files = entry.available_files()
-        if not files:
-            messagebox.showerror("Couldn't open the result", "The exported WAV files are missing.", parent=self.root)
-            return
-        self.clear_result()
-        self.result = entry.folder
-        if not self.source.get():
-            self.output.set(str(entry.folder))
-        self.set_progress(0)
-        self.state.set(f"Loaded · {entry.folder.name}")
-        if save:
-            self.save_recent(entry)
-        self.show_stems(files)
-        self.update_buttons()
-
-    def save_recent(self, entry):
+    def open_result(self):
         try:
-            remember_result(entry)
-        except OSError:
-            self.state.set(self.state.get() + " · Recent history unavailable")
-
-    def open_result(self, folder=None):
-        try:
-            folder = folder or self.result
-            if not folder or not folder.is_dir():
+            if not self.result or not self.result.is_dir():
                 raise FileNotFoundError("The output folder is missing.")
-            os.startfile(folder)
+            os.startfile(self.result)
         except OSError as exc:
             messagebox.showerror("Couldn't open the output folder", str(exc), parent=self.root)
 

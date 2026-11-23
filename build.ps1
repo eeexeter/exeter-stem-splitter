@@ -66,8 +66,8 @@ $stemIcons = Join-Path $PSScriptRoot 'stem-icons'
 $guiArgs = @('-m', 'PyInstaller', '--onefile', '--windowed', '--noconfirm', '--name', 'Stem Splitter',
              '--manifest', $manifest, '--icon', $icon, '--add-data', "${icon}:.", '--add-data', "${dropIcon}:.",
              '--distpath', '.runtime\pyinstaller-dist', '--workpath', '.runtime\pyinstaller', '--specpath', '.runtime')
-foreach ($stem in @('vocals', 'drums', 'bass', 'other', 'guitar', 'piano')) {
-    $stemIcon = Join-Path $stemIcons "$stem.png"
+foreach ($name in @('vocals', 'drums', 'bass', 'other', 'guitar', 'piano', 'play')) {
+    $stemIcon = Join-Path $stemIcons "$name.png"
     $guiArgs += @('--add-data', "${stemIcon}:stem-icons")
 }
 Invoke-Checked $python ($guiArgs + (Join-Path $PSScriptRoot 'app.pyw'))
