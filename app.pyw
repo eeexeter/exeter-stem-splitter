@@ -59,6 +59,57 @@ def read_worker(process, events):
     events.put({"exit": process.wait()})
 
 
+class Timeline(tk.Canvas):
+    def __init__(self, parent, position, pixels):
+        super().__init__(parent, bg=FIELD, width=pixels(72), height=pixels(22),
+                         highlightthickness=0, borderwidth=0, cursor="hand2", takefocus=True)
+        self.position = position
+        self.duration = 0
+        self.pixels = pixels
+        self.hovered = False
+        self.rail = self.create_line(0, 0, 0, 0, fill=BORDER, width=pixels(4), capstyle="round")
+        self.played = self.create_line(0, 0, 0, 0, fill=TEXT, width=pixels(4), capstyle="round")
+        self.focus_ring = self.create_oval(0, 0, 0, 0, outline=MUTED, width=pixels(1), state="hidden")
+        self.knob = self.create_oval(0, 0, 0, 0, fill=TEXT, outline="")
+        self.bind("<Configure>", self.draw)
+        self.bind("<Enter>", lambda _event: self.set_hover(True))
+        self.bind("<Leave>", lambda _event: self.set_hover(False))
+        self.bind("<FocusIn>", self.draw)
+        self.bind("<FocusOut>", self.draw)
+        self.position.trace_add("write", self.draw)
+
+    def track_edges(self):
+        margin = self.pixels(9)
+        return margin, max(margin + 1, self.winfo_width() - margin - 1)
+
+    def seconds_at(self, x):
+        left, right = self.track_edges()
+        fraction = max(0, min(1, (x - left) / (right - left)))
+        return fraction * self.duration
+
+    def set_duration(self, seconds):
+        self.duration = seconds
+        self.draw()
+
+    def set_hover(self, hovered):
+        self.hovered = hovered
+        self.draw()
+
+    def draw(self, *_event):
+        left, right = self.track_edges()
+        y = self.winfo_height() / 2
+        fraction = self.position.get() / self.duration if self.duration else 0
+        x = left + max(0, min(1, fraction)) * (right - left)
+        radius = self.pixels(5.5 if self.hovered else 4)
+        ring = radius + self.pixels(2)
+        self.coords(self.rail, left, y, right, y)
+        self.coords(self.played, left, y, x, y)
+        self.itemconfigure(self.played, state="normal" if x > left else "hidden")
+        self.coords(self.knob, x - radius, y - radius, x + radius, y + radius)
+        self.coords(self.focus_ring, x - ring, y - ring, x + ring, y + ring)
+        self.itemconfigure(self.focus_ring, state="normal" if self.focus_get() == self else "hidden")
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -73,10 +124,10 @@ class App:
         self.result = None
         self.player = StemPlayer()
         self.play_buttons = {}
+        self.playback_slots = {}
         self.seeking = False
         self.playhead = tk.DoubleVar()
         self.playback_time = tk.StringVar(value="0:00 / 0:00")
-        self.playback_stem = tk.StringVar()
         self.process = None
         self.worker_job = None
         self.staging = None
@@ -111,8 +162,6 @@ class App:
         style.map("Primary.TButton", background=[("disabled", BUTTON), ("active", "#dcdcdc")],
                   bordercolor=[("disabled", BORDER)])
         style.configure("Playback.TButton", padding=(px(7), px(3)))
-        style.configure("Playback.Horizontal.TScale", troughcolor=BORDER, background=TEXT)
-        style.map("Playback.Horizontal.TScale", background=[("disabled", MUTED), ("active", "#dcdcdc")])
         for control in ("TEntry", "TCombobox"):
             style.configure(control, foreground=TEXT, fieldbackground=FIELD, padding=(px(9), px(8)),
                             bordercolor=BORDER, lightcolor=FIELD, darkcolor=FIELD,
@@ -168,12 +217,10 @@ class App:
         for column in range(2):
             self.stem_list.columnconfigure(column, weight=1, uniform="stems")
 
-        transport = tk.Frame(self.playback, bg=PANEL)
-        transport.pack(fill="x", pady=(px(8), 0))
-        self.label(transport, variable=self.playback_stem, bg=PANEL, width=7, anchor="w").pack(side="left")
-        self.label(transport, variable=self.playback_time, bg=PANEL, color=MUTED).pack(side="right", padx=(px(8), 0))
-        self.timeline = ttk.Scale(transport, variable=self.playhead, from_=0, to=1, state="disabled",
-                                  style="Playback.Horizontal.TScale")
+        self.transport = tk.Frame(self.stem_list, bg=FIELD)
+        self.label(self.transport, variable=self.playback_time, bg=FIELD, color=MUTED).pack(
+            side="right", padx=(px(8), 0))
+        self.timeline = Timeline(self.transport, self.playhead, px)
         self.timeline.pack(side="left", fill="x", expand=True)
         self.timeline.bind("<ButtonPress-1>", self.begin_seek)
         self.timeline.bind("<B1-Motion>", self.preview_seek)
@@ -450,14 +497,21 @@ class App:
         px = self.pixels
         for index, stem in enumerate(self.expected_outputs):
             row = tk.Frame(self.stem_list, bg=FIELD, padx=px(8), pady=px(3))
-            row.grid(row=index // 2, column=index % 2, sticky="ew", padx=px(3), pady=px(3))
-            stem_icon(row, stem, px(24), FIELD, TEXT).pack(side="left", padx=(0, px(7)))
-            self.label(row, stem.capitalize(), bg=FIELD).pack(side="left")
+            row.grid(row=index // 2, column=index % 2, sticky="ew", padx=px(3), pady=(px(4), 0))
+            controls = tk.Frame(row, bg=FIELD)
+            controls.pack(fill="x")
+            stem_icon(controls, ASSETS / "stem-icons" / f"{stem}.png", px(24), FIELD).pack(
+                side="left", padx=(0, px(7)))
+            self.label(controls, stem.capitalize(), bg=FIELD).pack(side="left")
             path = self.result / self.stem_filename(stem)
-            button = ttk.Button(row, text="Play", width=7, style="Playback.TButton",
-                                command=lambda source=path, label=stem.capitalize(): self.play_stem(source, label))
+            button = ttk.Button(controls, text="Play", width=7, style="Playback.TButton",
+                                command=lambda source=path: self.play_stem(source))
             button.pack(side="right")
             self.play_buttons[path] = button
+            # The timeline uses this space without changing either column's geometry.
+            slot = tk.Frame(row, bg=FIELD, height=self.timeline.winfo_reqheight())
+            slot.pack(fill="x")
+            self.playback_slots[path] = slot
         self.update_playback_buttons()
         self.playback.pack(fill="x", pady=(px(12), 0))
         self.fit_playback()
@@ -467,9 +521,10 @@ class App:
         self.result = None
         if self.play_buttons:
             self.playback.pack_forget()
-            for row in self.stem_list.winfo_children():
-                row.destroy()
+            for slot in self.playback_slots.values():
+                slot.master.destroy()
             self.play_buttons.clear()
+            self.playback_slots.clear()
             self.fit_playback()
 
     def fit_playback(self):
@@ -477,13 +532,14 @@ class App:
         width, _ = self.root.minsize()
         self.root.minsize(width, max(self.pixels(450), self.body.winfo_reqheight()))
 
-    def play_stem(self, path, label):
+    def play_stem(self, path):
         self.seeking = False
         try:
             self.player.play(path)
-            self.playback_stem.set(label)
-            self.timeline.configure(to=self.player.duration or 1, state="normal")
+            self.timeline.set_duration(self.player.duration)
             self.update_playhead(self.player.position())
+            self.transport.place(in_=self.playback_slots[path], relwidth=1, relheight=1)
+            self.transport.tkraise()
         except OSError as exc:
             self.playback_error(exc)
         self.update_playback_buttons()
@@ -498,9 +554,9 @@ class App:
 
     def reset_timeline(self):
         self.seeking = False
-        self.timeline.configure(to=1, state="disabled")
-        self.playback_stem.set("")
+        self.timeline.set_duration(0)
         self.update_playhead(0)
+        self.transport.place_forget()
 
     def update_playhead(self, position):
         self.playhead.set(position)
@@ -515,8 +571,7 @@ class App:
 
     def preview_seek(self, event):
         if self.seeking:
-            position = max(0, min(self.player.duration, self.timeline.get(event.x, event.y)))
-            self.update_playhead(position)
+            self.update_playhead(self.timeline.seconds_at(event.x))
         return "break"
 
     def end_seek(self, event):

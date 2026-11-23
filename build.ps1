@@ -59,7 +59,15 @@ Get-VerifiedDownload 'https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/5
 $manifest = Join-Path $PSScriptRoot 'windows.manifest'
 $icon = Join-Path $PSScriptRoot 'stem-splitter-taskbar.ico'
 $dropIcon = Join-Path $PSScriptRoot 'stem-splitter-upload-icon.png'
-Invoke-Checked $python @('-m', 'PyInstaller', '--onefile', '--windowed', '--noconfirm', '--name', 'Stem Splitter', '--manifest', $manifest, '--icon', $icon, '--add-data', "${icon}:.", '--add-data', "${dropIcon}:.", '--distpath', '.runtime\pyinstaller-dist', '--workpath', '.runtime\pyinstaller', '--specpath', '.runtime', (Join-Path $PSScriptRoot 'app.pyw'))
+$stemIcons = Join-Path $PSScriptRoot 'stem-icons'
+$guiArgs = @('-m', 'PyInstaller', '--onefile', '--windowed', '--noconfirm', '--name', 'Stem Splitter',
+             '--manifest', $manifest, '--icon', $icon, '--add-data', "${icon}:.", '--add-data', "${dropIcon}:.",
+             '--distpath', '.runtime\pyinstaller-dist', '--workpath', '.runtime\pyinstaller', '--specpath', '.runtime')
+foreach ($stem in @('vocals', 'drums', 'bass', 'other', 'guitar', 'piano')) {
+    $stemIcon = Join-Path $stemIcons "$stem.png"
+    $guiArgs += @('--add-data', "${stemIcon}:stem-icons")
+}
+Invoke-Checked $python ($guiArgs + (Join-Path $PSScriptRoot 'app.pyw'))
 if ($Variant -ne 'CUDA') {
     Invoke-Checked $python @('package.py', 'cpu')
 }

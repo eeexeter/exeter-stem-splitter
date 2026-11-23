@@ -1,40 +1,13 @@
 import tkinter as tk
 
-
-# Paths on a 24-pixel grid, scaled by Tk's display DPI.
-PATHS = {
-    "vocals": (
-        (10, 15, 8, 13, 8, 10, 13, 5, 16, 5, 19, 8, 19, 11, 14, 16, 11, 16, 10, 15),
-        (10, 15, 5, 20), (12, 8, 16, 12),
-    ),
-    "drums": (
-        (4, 12, 5, 10, 12, 9, 19, 10, 20, 12, 19, 14, 12, 15, 5, 14, 4, 12, 4, 18,
-         5, 19, 12, 20, 19, 19, 20, 18, 20, 12),
-        (8, 15, 12, 20, 16, 15), (3, 4, 12, 9), (21, 4, 14, 9),
-    ),
-    "bass": (
-        (12, 11, 9, 10, 6, 12, 6, 14, 3, 16, 3, 19, 5, 21, 8, 21, 11, 19, 12, 16, 14, 14),
-        (8, 17, 19, 6, 20, 6, 22, 4, 20, 2, 17, 5, 18, 6), (7, 15, 9, 17), (6, 17, 8, 19),
-    ),
-    "guitar": (
-        (12, 10, 9, 9, 7, 10, 7, 13, 4, 14, 3, 17, 4, 20, 7, 21, 10, 20, 12, 18, 12, 15,
-         15, 14, 15, 11),
-        (10, 14, 18, 6, 17, 5, 20, 2, 22, 4, 19, 7, 18, 6), (6, 16, 8, 18), (8, 13, 11, 16),
-    ),
-    "piano": (
-        (3, 6, 21, 6, 21, 18, 3, 18, 3, 6),
-        (7, 6, 7, 18), (12, 6, 12, 18), (17, 6, 17, 18),
-        (6, 7, 6, 12, 8, 12, 8, 7), (11, 7, 11, 12, 13, 12, 13, 7), (16, 7, 16, 12, 18, 12, 18, 7),
-    ),
-    "other": (
-        (4, 10, 4, 14), (8, 7, 8, 17), (12, 4, 12, 20), (16, 7, 16, 17), (20, 10, 20, 14),
-    ),
-}
+from PIL import Image, ImageTk
 
 
-def stem_icon(parent, stem, size, background, color):
-    icon = tk.Canvas(parent, width=size, height=size, bg=background, highlightthickness=0, bd=0)
-    for path in PATHS[stem]:
-        icon.create_line(*(coordinate * size / 24 for coordinate in path),
-                         fill=color, width=max(1, size / 14), capstyle="round", joinstyle="round")
+def stem_icon(parent, path, size, background):
+    with Image.open(path) as original:
+        image = original.resize((size, size), Image.Resampling.LANCZOS)
+    photo = ImageTk.PhotoImage(image, master=parent)
+    icon = tk.Label(parent, image=photo, bg=background, borderwidth=0, highlightthickness=0,
+                    padx=0, pady=0)
+    icon.image = photo
     return icon
